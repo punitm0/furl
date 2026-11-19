@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/punitm0/furl/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.
+  - name: Questions and guides
+    url: https://getfurl.app/guides/
+    about: Plain-language guides to freeing space on a Mac.

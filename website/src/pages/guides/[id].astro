@@ -1,0 +1,79 @@
+---
+import { getCollection, render } from "astro:content";
+import Base from "../../layouts/Base.astro";
+import Header from "../../components/Header.astro";
+import Footer from "../../components/Footer.astro";
+import GuideCard from "../../components/GuideCard.astro";
+
+export async function getStaticPaths() {
+  const guides = (await getCollection("guides")).sort((a, b) => a.data.order - b.data.order);
+  // GuideArticle board: More guides are the next three from the same group.
+  return guides.map((guide) => {
+    const group = guides.filter((g) => g.data.audience === guide.data.audience);
+    const at = group.indexOf(guide);
+    const more = [1, 2, 3].map((n) => group[(at + n) % group.length]).filter((g) => g !== guide);
+    return { params: { id: guide.id }, props: { guide, more } };
+  });
+}
+
+const { guide, more } = Astro.props;
+const { Content, headings } = await render(guide);
+const toc = headings.filter((h) => h.depth === 2);
+// GuideArticle board: TL;DR bullets, with `inline code` turned into <code>.
+const escape = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const tldr = guide.data.tldr.map((t) => escape(t).replace(/`([^`]+)`/g, "<code>$1</code>"));
+const groupTitle = guide.data.audience === "developers" ? "More for developers" : "More for every Mac";
+const updated = guide.data.updated.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+---
+<Base title={`${guide.data.title} · Furl`} description={guide.data.description} type="article">
+  <Header />
+  <main id="main" class="guide-page">
+    <div class="guide-layout">
+      <article class="guide-article">
+        <nav class="guide-breadcrumb" aria-label="Breadcrumb"><a href="/guides/">Guides</a></nav>
+        <h1 id="top">{guide.data.title}</h1>
+        <p class="guide-lede">{guide.data.description}</p>
+        <p class="guide-meta">{guide.data.readingMinutes} min read · Updated {updated}</p>
+        <aside class="guide-tldr" aria-labelledby="tldr-title">
+          <h2 id="tldr-title">TL;DR</h2>
+          <ul>{tldr.map((t) => <li><span set:html={t} /></li>)}</ul>
+        </aside>
+        {toc.length > 0 && (
+          <details class="guide-toc-inline">
+            <summary>On this page</summary>
+            <ul>{toc.map((h) => <li><a href={`#${h.slug}`}>{h.text}</a></li>)}</ul>
+          </details>
+        )}
+        <img class="guide-cover" src={guide.data.cover} alt="" width="1200" height="630">
+        <div class="prose">
+          <Content />
+        </div>
+        <aside class="guide-cta" aria-label="Get Furl">
+          <div>
+            <strong>Do it in a few clicks</strong>
+            <p>Furl finds all of this for you, explains each item, and uses the Trash by default so you can undo. Free, open source, private by default.</p>
+          </div>
+          <a href="/#pricing" class="btn-primary">Get Furl</a>
+        </aside>
+      </article>
+      {toc.length > 0 && (
+        <nav class="doc-toc guide-toc" aria-label="On this page" data-toc>
+          <span class="doc-toc-title">ON THIS PAGE</span>
+          {toc.map((h) => <a href={`#${h.slug}`}>{h.text}</a>)}
+          <a href="#top" class="guide-toc-top" data-toc-skip>Back to top ↑</a>
+        </nav>
+      )}
+    </div>
+    <section class="guides-more" aria-labelledby="more-title">
+      <h2 id="more-title">{groupTitle}</h2>
+      <div class="guide-grid">
+        {more.map((g) => <GuideCard guide={g} />)}
+      </div>
+    </section>
+  </main>
+  <Footer />
+</Base>
+
+<script>
+  import "../../scripts/toc";
+</script>

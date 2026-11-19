@@ -1,0 +1,34 @@
+---
+// Served by Cloudflare for any unknown path (cloudflare.config.ts: notFoundHandling "404-page").
+// Built only from existing site pieces (guides hero, primary and outline buttons); there's no design board for it.
+import Base from "../layouts/Base.astro";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+---
+<Base noindex
+  title="Page not found · Furl"
+  description="This page doesn't exist. Head back to Furl's home page or browse the guides."
+>
+  <Header />
+  <main id="main" class="guides-page not-found">
+    <header class="guides-hero">
+      <h1>This page isn't here.</h1>
+      <p>The link may be old, or the address has a typo. Nothing's been deleted, we promise.</p>
+    </header>
+    <div class="not-found-actions">
+      <a class="btn-primary" href="/">Go to the home page</a>
+      <a class="btn-outline btn-outline-lg" href="/guides/">Browse the guides</a>
+    </div>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  .not-found { min-height: 50vh; }
+  .not-found-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .not-found-actions .btn-primary { padding: 0 24px; }
+  @media (max-width: 640px) {
+    .not-found-actions { flex-direction: column; align-items: stretch; }
+    .not-found-actions .btn-primary { justify-content: center; }
+  }
+</style>

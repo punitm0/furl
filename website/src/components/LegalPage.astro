@@ -1,0 +1,62 @@
+---
+// Shared shell for the Terms and Refund pages: same layout as /privacy
+// (sticky "On this page" on the left, content 860 max on the right).
+import Base from "../layouts/Base.astro";
+import Header from "./Header.astro";
+import Footer from "./Footer.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  eyebrow: string;
+  heading: string;
+  intro: string;
+  updated: string;
+  toc: { id: string; label: string }[];
+}
+
+const { title, description, eyebrow, heading, intro, updated, toc } = Astro.props;
+---
+<Base title={title} description={description}>
+  <Header />
+  <main id="main" class="doc-page privacy-page legal-page">
+    <nav class="doc-toc" aria-label="On this page" data-toc>
+      <span class="doc-toc-title">ON THIS PAGE</span>
+      {toc.map((t, i) => (
+        <a href={`#${t.id}`} aria-current={i === 0 ? "true" : undefined}>{t.label}</a>
+      ))}
+    </nav>
+    <div class="doc-content">
+      <div class="doc-hero">
+        <span class="doc-eyebrow">{eyebrow}</span>
+        <h1>{heading}</h1>
+        <p>{intro}</p>
+        <span class="doc-updated">Last updated {updated}</span>
+      </div>
+      <slot />
+    </div>
+  </main>
+  <Footer />
+</Base>
+
+<script>
+  import "../scripts/toc";
+</script>
+
+<style is:global>
+  .legal-page .doc-section ul {
+    margin: 0;
+    padding-left: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--text-body);
+  }
+  .legal-page .doc-section a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+  .legal-page .doc-section strong { color: var(--ink); font-weight: 600; }
+  @media (max-width: 640px) {
+    .legal-page .doc-section ul { font-size: 15.5px; }
+  }
+</style>

@@ -1,0 +1,1 @@
+../../../Furl/Services/SpaceAnalyzer.swift

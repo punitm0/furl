@@ -1,0 +1,13 @@
+# Cloudflare static-asset headers. Points AI agents at the Markdown twin of each page (see astro.config.mjs).
+/
+  Link: </index.md>; rel="alternate"; type="text/markdown"
+/guides/
+  Link: </guides.md>; rel="alternate"; type="text/markdown"
+/guides/:slug/
+  Link: </guides/:slug.md>; rel="alternate"; type="text/markdown"
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8

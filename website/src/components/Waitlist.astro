@@ -1,0 +1,18 @@
+<section id="windows" class="waitlist" aria-labelledby="waitlist-title">
+  <div class="waitlist-copy">
+    <h2 id="waitlist-title">On Windows? Get told when it's ready.</h2>
+    <p>One email when the Windows version ships. Then your address is deleted.</p>
+  </div>
+  <form class="waitlist-form" id="waitlist-form" novalidate>
+    <div class="waitlist-field">
+      <label for="waitlist-email">Email</label>
+      <input id="waitlist-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required>
+    </div>
+    <button type="submit" class="waitlist-submit">Join the Windows waitlist</button>
+    <p class="waitlist-status" id="waitlist-status" role="status" aria-live="polite"></p>
+  </form>
+</section>
+
+<script>
+  import "../scripts/waitlist";
+</script>

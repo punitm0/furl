@@ -1,0 +1,36 @@
+---
+import LegalPage from "../components/LegalPage.astro";
+
+const LAST_UPDATED = "19 November 2026";
+const CONTACT_EMAIL = "hello@getfurl.app";
+
+const toc = [
+  { id: "policy", label: "The policy" },
+  { id: "how", label: "How to ask" },
+];
+---
+<LegalPage
+  title="Refund Policy · Furl"
+  description="Full refund for Furl within 30 days, no questions asked."
+  eyebrow="REFUND POLICY"
+  heading="Refund Policy"
+  intro="Full refund within 30 days, no questions asked."
+  updated={LAST_UPDATED}
+  toc={toc}
+>
+  <section id="policy" class="doc-section" aria-labelledby="policy-title">
+    <h2 id="policy-title">The policy</h2>
+    <ul>
+      <li>Ask within 30 days of paying and you get everything back, tax included. No reason needed.</li>
+      <li>Charged twice or the wrong amount? Same thing: just ask.</li>
+      <li>The refund goes to the payment method you used, through Dodo Payments. Your bank decides how fast it shows up.</li>
+      <li>You keep Furl. It's free software, so nothing switches off.</li>
+      <li>There's nothing to cancel: it's a one-time payment, not a subscription.</li>
+    </ul>
+  </section>
+
+  <section id="how" class="doc-section" aria-labelledby="how-title">
+    <h2 id="how-title">How to ask</h2>
+    <p>Email <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> with the email address you paid with, or reply to your Dodo Payments receipt. Please write to us before disputing a charge with your bank.</p>
+  </section>
+</LegalPage>

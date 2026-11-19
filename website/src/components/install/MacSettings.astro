@@ -1,0 +1,29 @@
+---
+/* A System Settings window drawn in HTML/CSS, with Privacy & Security selected. The pane content goes in the slot. */
+const sidebar: { label: string; color: string; selected?: boolean }[] = [
+  { label: "Wi‑Fi", color: "#2F80ED" },
+  { label: "Bluetooth", color: "#2F80ED" },
+  { label: "General", color: "#8E8E93" },
+  { label: "Appearance", color: "#1C1C1E" },
+  { label: "Notifications", color: "#FF3B30" },
+  { label: "Privacy & Security", color: "#2F80ED", selected: true },
+  { label: "Desktop & Dock", color: "#1C1C1E" },
+  { label: "Displays", color: "#2F80ED" },
+];
+---
+<div class="mac-window-fit" aria-hidden="true">
+  <div class="mac-window">
+    <div class="mac-sidebar">
+      <div class="mac-traffic"><span class="tl-red"></span><span class="tl-yellow"></span><span class="tl-green"></span></div>
+      <div class="mac-search">Search</div>
+      {sidebar.map((item) => (
+        <div class:list={["mac-sidebar-item", { "is-selected": item.selected }]}>
+          <span style={`background: ${item.color}`}></span>{item.label}
+        </div>
+      ))}
+    </div>
+    <div class="mac-pane">
+      <slot />
+    </div>
+  </div>
+</div>

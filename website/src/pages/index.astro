@@ -1,0 +1,31 @@
+---
+import Base from "../layouts/Base.astro";
+import Header from "../components/Header.astro";
+import Hero from "../components/Hero.astro";
+import Pricing from "../components/Pricing.astro";
+import Preview from "../components/Preview.astro";
+import Stats from "../components/Stats.astro";
+import Features from "../components/Features.astro";
+import Privacy from "../components/Privacy.astro";
+import GuidesTeaser from "../components/GuidesTeaser.astro";
+import Waitlist from "../components/Waitlist.astro";
+import { site } from "../site.config";
+import Footer from "../components/Footer.astro";
+---
+<Base
+  title="Furl: get your Mac's space back"
+  description="Furl finds the caches, merged worktrees, forgotten downloads and leftover dev servers you don't need, tells you why, and uses the Trash by default so you can undo. Free, open source, private by default."
+>
+  <Header />
+  <main id="main">
+    <Hero />
+    <Pricing />
+    <Preview />
+    <Stats />
+    <Features />
+    <Privacy />
+    <GuidesTeaser />
+    {site.waitlistUrl && <Waitlist />}
+  </main>
+  <Footer />
+</Base>

@@ -1,0 +1,23 @@
+---
+import { getCollection } from "astro:content";
+import GuideCard from "./GuideCard.astro";
+
+// GuidesTeaser board: the featured guide, System Data and one developer guide.
+const all = await getCollection("guides");
+const picks = ["where-did-my-disk-space-go", "what-is-system-data-on-mac", "clean-dev-caches"];
+const guides = picks
+  .map((id) => all.find((g) => g.id === id))
+  .filter((g): g is (typeof all)[number] => g !== undefined);
+---
+<section class="guides-teaser" aria-labelledby="guides-teaser-title">
+  <div class="guides-teaser-head">
+    <div>
+      <h2 id="guides-teaser-title">Guides</h2>
+      <p>Plain-English answers about where your space went, with the commands to do it yourself.</p>
+    </div>
+    <a href="/guides/">All {all.length} guides →</a>
+  </div>
+  <div class="guide-grid">
+    {guides.map((guide) => <GuideCard guide={guide} />)}
+  </div>
+</section>

@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /website
+    schedule: { interval: monthly }
+    labels: [dependencies, website]
+    groups:
+      website: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /stats-worker
+    schedule: { interval: monthly }
+    labels: [dependencies, stats-worker]
+    groups:
+      stats-worker: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    labels: [dependencies]

@@ -1,0 +1,137 @@
+---
+import Base from "../layouts/Base.astro";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+import { site } from "../site.config";
+
+// PrivacyPage board. The table rows must match the app exactly:
+// a feature that talks to the network gets a row here before it ships.
+const LAST_UPDATED = "19 November 2026";
+const CONTACT_EMAIL = "hello@getfurl.app";
+
+const summary = [
+  {
+    title: "Your files stay on your Mac",
+    text: "Furl never uploads files, names or paths.",
+    icon: `<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path><path d="M8.5 12l2.5 2.5 4.5-5"></path>`,
+  },
+  {
+    title: "We never see your card",
+    text: "Optional payment runs on Dodo Payments.",
+    icon: `<rect x="3" y="6" width="18" height="13" rx="2"></rect><path d="M3 10h18M7 15h4"></path>`,
+  },
+  {
+    title: "No account",
+    text: "No sign-up, login or licence key.",
+    icon: `<circle cx="12" cy="8" r="4"></circle><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"></path>`,
+  },
+  {
+    title: "Works offline",
+    text: "Smart Review runs on your Mac, not a server.",
+    icon: `<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path>`,
+  },
+];
+
+const network = [
+  { feature: "Check for Updates", to: "GitHub", when: "When you click it.", sends: "Nothing about you." },
+  {
+    feature: "Public counter",
+    to: "Furl's stats server",
+    when: "About once a day (more often while catching up after being offline).",
+    sends: "Anonymous counts (space freed, items cleaned, files compressed, memory freed), app version, macOS version, Mac type and Full Disk Access status, stored with the date. Linked only to a random ID, not to you or your IP.",
+  },
+  { feature: "Checkout link", to: "Furl's stats server", when: "At launch and when you open Support Furl, at most every 6 to 24 hours.", sends: "Nothing. It just fetches the payment link." },
+  { feature: "Optional tools", to: "Homebrew", when: "When you click Install.", sends: "A normal Homebrew download. Furl turns off Homebrew's own analytics." },
+  { feature: "Report a problem", to: "GitHub, in your browser", when: "When you click Open GitHub Issue.", sends: "The report you reviewed. No file names or paths." },
+  { feature: "Pay what you like", to: "Dodo Payments, in your browser", when: "When you pay.", sends: "What you enter at checkout." },
+];
+
+const toc = [
+  { id: "summary", label: "In short" },
+  { id: "network", label: "What Furl sends" },
+  { id: "paying", label: "When you pay" },
+  { id: "more", label: "Website and contact" },
+];
+---
+<Base
+  title="Privacy · Furl"
+  description="Furl cleans your disk on your Mac, and your files stay there. Everything Furl sends over the network, and what we get when you pay."
+>
+  <Header />
+  <main id="main" class="doc-page privacy-page">
+    <nav class="doc-toc" aria-label="On this page" data-toc>
+      <span class="doc-toc-title">ON THIS PAGE</span>
+      {toc.map((t, i) => (
+        <a href={`#${t.id}`} aria-current={i === 0 ? "true" : undefined}>{t.label}</a>
+      ))}
+    </nav>
+    <div class="doc-content">
+      <div class="doc-hero">
+        <span class="doc-eyebrow">PRIVACY</span>
+        <h1>Your files never leave your Mac.</h1>
+        <p>Everything Furl sends, and what we get when you pay.</p>
+        <span class="doc-updated">Last updated {LAST_UPDATED}</span>
+      </div>
+
+      <section id="summary" class="privacy-summary" aria-label="In short">
+        {summary.map((card) => (
+          <div class="privacy-card">
+            <span class="privacy-card-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={card.icon}></svg></span>
+            <div class="privacy-card-text">
+              <strong>{card.title}</strong>
+              <span>{card.text}</span>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section id="network" class="doc-section" aria-labelledby="network-title">
+        <h2 id="network-title">What Furl sends</h2>
+        <p>Only the counter and the checkout-link check run on their own. No tracking, ads or crash reports.</p>
+        <div class="network-table-wrap only-desktop">
+          <table class="network-table">
+            <thead>
+              <tr><th scope="col">FEATURE</th><th scope="col">GOES TO</th><th scope="col">WHEN</th><th scope="col">WHAT IS SENT</th></tr>
+            </thead>
+            <tbody>
+              {network.map((row) => (
+                <tr><th scope="row">{row.feature}</th><td>{row.to}</td><td>{row.when}</td><td>{row.sends}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div class="network-cards only-mobile">
+          {network.map((row) => (
+            <div class="network-card">
+              <strong>{row.feature}</strong>
+              <dl>
+                <dt>Goes to</dt><dd>{row.to}</dd>
+                <dt>When</dt><dd>{row.when}</dd>
+                <dt>Sends</dt><dd>{row.sends}</dd>
+              </dl>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section id="paying" class="doc-section" aria-labelledby="paying-title">
+        <h2 id="paying-title">When you pay</h2>
+        <p>Dodo Payments handles payment under its own privacy policy and shares your name, email, billing address and amount with us, never your card. We use them only for receipts, refunds, support and tax. We never sell them or market to you.</p>
+      </section>
+
+      <section id="more" class="doc-section" aria-labelledby="more-title">
+        <h2 id="more-title">Website and contact</h2>
+        <p>getfurl.app sets no cookies, loads no trackers and serves its own fonts. Furl is open source, so every network call is in the <a href={site.githubUrl}>code</a>. Questions or deleting your purchase data: <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
+      </section>
+    </div>
+  </main>
+  <Footer />
+</Base>
+
+<script>
+  import "../scripts/toc";
+</script>
+
+<style>
+  .doc-section a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+</style>

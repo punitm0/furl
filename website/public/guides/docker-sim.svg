@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+<rect width="1200" height="630" fill="#EEEEEA"/>
+<g transform="translate(130 85)">
+<rect width="940" height="460" rx="28" fill="#FFFFFF" stroke="#E3E3DE" stroke-width="2"/>
+<rect x="44" y="44" width="240" height="22" rx="11" fill="#1A1A1A"/>
+<rect x="44" y="80" width="150" height="14" rx="7" fill="#CFCFC9"/>
+<g transform="translate(44 136)"><g transform="translate(20 20)"><rect x="0" y="150" width="92" height="64" rx="10" fill="#1A5FB4"/><rect x="104" y="150" width="92" height="64" rx="10" fill="#1A5FB4"/><rect x="208" y="150" width="92" height="64" rx="10" fill="#4A86D0"/><rect x="52" y="74" width="92" height="64" rx="10" fill="#4A86D0"/><rect x="156" y="74" width="92" height="64" rx="10" fill="#1A5FB4"/><rect x="104" y="0" width="92" height="64" rx="10" fill="#8DB3E2"/><path d="M-10 236 H320" stroke="#1A5FB4" stroke-width="6" stroke-linecap="round"/></g>
+<path d="M380 140 H460" stroke="#CFCFC9" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round"/>
+<g transform="translate(500 0)"><rect width="150" height="280" rx="28" fill="#FFFFFF" stroke="#1A1A1A" stroke-width="6"/><rect x="55" y="14" width="40" height="10" rx="5" fill="#1A1A1A"/>
+<rect x="24" y="50" width="26" height="26" rx="7" fill="#1A5FB4"/><rect x="60" y="50" width="26" height="26" rx="7" fill="#0B7A5E"/><rect x="96" y="50" width="26" height="26" rx="7" fill="#5FE3B0"/><rect x="24" y="86" width="26" height="26" rx="7" fill="#0B7A5E"/><rect x="60" y="86" width="26" height="26" rx="7" fill="#5FE3B0"/><rect x="96" y="86" width="26" height="26" rx="7" fill="#33332F"/><rect x="24" y="122" width="26" height="26" rx="7" fill="#5FE3B0"/><rect x="60" y="122" width="26" height="26" rx="7" fill="#33332F"/><rect x="96" y="122" width="26" height="26" rx="7" fill="#1A5FB4"/><rect x="24" y="158" width="26" height="26" rx="7" fill="#33332F"/><rect x="60" y="158" width="26" height="26" rx="7" fill="#1A5FB4"/><rect x="96" y="158" width="26" height="26" rx="7" fill="#0B7A5E"/></g>
+<g transform="translate(700 90)"><path d="M50 0 L100 88 H0Z" fill="#FDEBDD" stroke="#B54708" stroke-width="6" stroke-linejoin="round"/><path d="M50 30 v26" stroke="#B54708" stroke-width="7" stroke-linecap="round"/><circle cx="50" cy="70" r="4.5" fill="#B54708"/></g></g>
+</g>
+</svg>

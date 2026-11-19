@@ -1,0 +1,19 @@
+# Repository labels. GitHub doesn't read this file by itself: apply it once with
+#   gh label create <name> --color <color> --description "<description>" --force
+# for each entry (scripts/sync_labels.sh does exactly that).
+- { name: bug,              color: d73a4a, description: "Something isn't working" }
+- { name: enhancement,      color: a2eeef, description: "New feature or request" }
+- { name: safety,           color: b60205, description: "Could delete, move or change the wrong files" }
+- { name: security,         color: ee0701, description: "Security issue (report privately first)" }
+- { name: privacy,          color: 5319e7, description: "What leaves the Mac" }
+- { name: performance,      color: fbca04, description: "Scan speed, memory or CPU" }
+- { name: ui,               color: c5def5, description: "Look and feel, copy, design" }
+- { name: documentation,    color: 0075ca, description: "README, guides, comments" }
+- { name: website,          color: 1d76db, description: "getfurl.app" }
+- { name: stats-worker,     color: 0e8a16, description: "Community stats Worker" }
+- { name: good first issue, color: 7057ff, description: "Small and well-scoped, good for newcomers" }
+- { name: help wanted,      color: 008672, description: "Extra attention is needed" }
+- { name: question,         color: d876e3, description: "Further information is requested" }
+- { name: duplicate,        color: cfd3d7, description: "This issue or pull request already exists" }
+- { name: wontfix,          color: ffffff, description: "This will not be worked on" }
+- { name: dependencies,     color: 0366d6, description: "Dependency updates" }

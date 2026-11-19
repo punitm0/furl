@@ -1,0 +1,80 @@
+---
+import { site } from "../site.config";
+// Pay what you like only once a checkout link is set; until then the card is a plain free download.
+const paying = Boolean(site.checkoutUrl);
+---
+<section id="pricing" class="pricing" aria-labelledby="pricing-title">
+  <div class="pricing-card" id="pricing-card">
+    <div class="pricing-form" id="pricing-form">
+      {paying ? (
+        <Fragment>
+      <div class="pricing-head">
+        <h2 id="pricing-title"><span class="only-desktop">Pay what you like. Even nothing.</span><span class="only-mobile">Pay what you like</span></h2>
+        <span class="pricing-aside"><span class="only-desktop">Every feature is free</span><span class="only-mobile">even nothing</span></span>
+      </div>
+      <!-- The radiogroup is display: contents, so its chips and the Other field share one row. -->
+      <div class="chips-row">
+        <div class="chips" role="radiogroup" aria-label="Amount">
+          <button type="button" class="chip" role="radio" aria-checked="false" data-amount="0">$0</button>
+          <button type="button" class="chip" role="radio" aria-checked="false" data-amount="5">$5</button>
+          <button type="button" class="chip" role="radio" aria-checked="true" data-amount="12">$12</button>
+          <button type="button" class="chip" role="radio" aria-checked="false" data-amount="25">$25</button>
+          <button type="button" class="chip chip-other" role="radio" aria-checked="false" data-amount="other">Other</button>
+        </div>
+        <!-- Other, selected: the chip becomes a field. Whole dollars from $1 to $1,000, as in the app. -->
+        <div class="chip-field" id="custom-amount" hidden>
+          <span aria-hidden="true">$</span>
+          <input id="custom-amount-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" autocomplete="off" aria-label="Your amount in US dollars" aria-describedby="custom-amount-hint">
+        </div>
+      </div>
+      <p class="amount-hint" id="custom-amount-hint" hidden>Enter a whole number from $1 to $1,000.</p>
+      <a href="#" class="btn-primary" id="pay-button">Pay $12 and download</a>
+      <!-- $0 selected: one honest line, fades in (160 ms). Never blocks the free download. -->
+      <div class="pricing-nudge" id="pricing-nudge" role="note" hidden>Furl is built by one person. If it saves you an afternoon, $5 helps keep it going.<a href="#pricing" id="pick-five">Pick $5</a></div>
+      <p class="pricing-note" id="pricing-free-note">Choose $0 to download straight away.</p>
+      <ul class="pricing-ticks" aria-label="No guilt">
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>No nag screens</li>
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>No locked features</li>
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>$0 gets the same thank-you</li>
+      </ul>
+        </Fragment>
+      ) : (
+        <Fragment>
+      <div class="pricing-head">
+        <h2 id="pricing-title">Free and open source</h2>
+        <span class="pricing-aside">Every feature included</span>
+      </div>
+      <a href={site.downloadUrl} class="btn-primary" id="pay-button">Download free</a>
+      <ul class="pricing-ticks" aria-label="What you get">
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>No locked features</li>
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>No account</li>
+        <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0B7A5E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Open source</li>
+      </ul>
+        </Fragment>
+      )}
+    </div>
+    <!-- Pay-what-you-like card only: after "Download free", or back from Dodo Payments at /?paid=1, the card swaps in place. -->
+    <div class="pricing-done" id="pricing-done" hidden>
+      <div class="pricing-done-head">
+        <svg class="furl-celebrate" width="96" height="96" viewBox="-19 -19 102 102" aria-hidden="true"><g class="furl-confetti" style="--dx:35.4px;--dy:2.8px;--i:0"><rect x="66" y="34" width="2.8" height="1.6" rx="0.5" fill="#5FE3B0" transform="rotate(14 67.4 34.8)"></rect></g><g class="furl-confetti" style="--dx:37.4px;--dy:18.8px;--i:1"><rect x="68" y="50" width="2.8" height="1.6" rx="0.5" fill="#F2F2EE" transform="rotate(54 69.4 50.8)"></rect></g><g class="furl-confetti" style="--dx:27.4px;--dy:32.8px;--i:2"><rect x="58" y="64" width="2.8" height="1.6" rx="0.5" fill="#FFD27A" transform="rotate(94 59.4 64.8)"></rect></g><g class="furl-confetti" style="--dx:9.4px;--dy:38.8px;--i:3"><rect x="40" y="70" width="2.8" height="1.6" rx="0.5" fill="#7FB8FF" transform="rotate(134 41.4 70.8)"></rect></g><g class="furl-confetti" style="--dx:-12.6px;--dy:36.8px;--i:4"><rect x="18" y="68" width="2.8" height="1.6" rx="0.5" fill="#F7A1C4" transform="rotate(214 19.4 68.8)"></rect></g><g class="furl-confetti" style="--dx:-36.6px;--dy:20.8px;--i:5"><rect x="-6" y="52" width="2.8" height="1.6" rx="0.5" fill="#5FE3B0" transform="rotate(254 -4.6 52.8)"></rect></g><g class="furl-confetti" style="--dx:-38.6px;--dy:-1.2px;--i:6"><rect x="-8" y="30" width="2.8" height="1.6" rx="0.5" fill="#F2F2EE" transform="rotate(294 -6.6 30.8)"></rect></g><g class="furl-confetti" style="--dx:-24.6px;--dy:-25.2px;--i:7"><rect x="6" y="6" width="2.8" height="1.6" rx="0.5" fill="#FFD27A" transform="rotate(334 7.4 6.8)"></rect></g><g class="furl-confetti" style="--dx:-0.6px;--dy:-37.2px;--i:8"><rect x="30" y="-6" width="2.8" height="1.6" rx="0.5" fill="#7FB8FF" transform="rotate(14 31.4 -5.2)"></rect></g><g class="furl-confetti" style="--dx:23.4px;--dy:-27.2px;--i:9"><rect x="54" y="4" width="2.8" height="1.6" rx="0.5" fill="#F7A1C4" transform="rotate(54 55.4 4.8)"></rect></g><path class="furl-stem" pathLength="1" d="M26 52 V26 a12 12 0 0 1 12 -12" fill="none" stroke="#F2F2EE" stroke-width="6" stroke-linecap="round"></path><path class="furl-bar" pathLength="1" d="M17 34 H35" fill="none" stroke="#F2F2EE" stroke-width="6" stroke-linecap="round"></path><path class="furl-curl" pathLength="1" d="M38 14 a7 7 0 0 1 0 14 a3.5 3.5 0 0 1 0 -7" fill="none" stroke="#5FE3B0" stroke-width="6" stroke-linecap="round"></path></svg>
+      </div>
+      <div class="pricing-done-body">
+        <h2 class="pricing-done-title" id="pricing-done-title" tabindex="-1">Enjoy Furl</h2>
+        <p class="pricing-done-text" id="pricing-done-text">Your download has started. Every feature is yours, and Furl will never ask again.</p>
+        <p class="pricing-done-again">Didn't start? <a href="#pricing" id="download-again">Download again</a></p>
+      </div>
+    </div>
+  </div>
+  <p class="pricing-note pricing-note-below">Not notarized yet, so the first launch takes one extra step. <a href="/install">How to open Furl →</a></p>
+  <button type="button" class="share-button only-mobile-flex" id="share-button">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 8l5-5 5 5"></path><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"></path></svg>
+    On your phone? Send it to your Mac
+  </button>
+  <p class="share-hint only-mobile" id="share-hint" aria-live="polite">AirDrop, Messages, Notes or copy the link</p>
+  <p class="mobile-meta only-mobile">Free and open source{paying && " · Pay what you like"} · macOS 14+</p>
+</section>
+
+<script>
+  import "../scripts/pricing";
+  import "../scripts/share";
+</script>

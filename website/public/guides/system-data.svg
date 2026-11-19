@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+<rect width="1200" height="630" fill="#EEEEEA"/><defs><pattern id="h" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="14" height="14" fill="#DDF3EA"/><rect width="6" height="14" fill="#5FE3B0"/></pattern></defs>
+<g transform="translate(130 85)">
+<rect width="940" height="460" rx="28" fill="#FFFFFF" stroke="#E3E3DE" stroke-width="2"/>
+<rect x="44" y="44" width="240" height="22" rx="11" fill="#1A1A1A"/>
+<rect x="44" y="80" width="150" height="14" rx="7" fill="#CFCFC9"/>
+<g transform="translate(44 136)"><rect y="20" width="852" height="64" rx="18" fill="#EEEEEA"/>
+<rect y="20" width="300" height="64" rx="18" fill="#33332F"/><rect x="290" y="20" width="140" height="64" fill="#1A5FB4"/><rect x="430" y="20" width="220" height="64" fill="#868E96"/><rect x="650" y="20" width="96" height="64" fill="url(#h)"/>
+<path d="M430 108 v16 h316 v-16" fill="none" stroke="#0B7A5E" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="528" y="146" width="120" height="18" rx="9.0" fill="#0B7A5E"/>
+<rect x="0" y="210" width="110" height="12" rx="6" fill="#CFCFC9"/><rect x="140" y="210" width="80" height="12" rx="6" fill="#CFCFC9"/><rect x="250" y="210" width="96" height="12" rx="6" fill="#CFCFC9"/>
+<g transform="translate(720 150)"><rect x="28" y="0" width="112" height="70" rx="12" fill="#E1ECFA" stroke="#1A5FB4" stroke-width="4"/><rect x="14" y="14" width="112" height="70" rx="12" fill="#E1ECFA" stroke="#1A5FB4" stroke-width="4"/><rect y="28" width="112" height="70" rx="12" fill="#FFFFFF" stroke="#1A5FB4" stroke-width="4"/><circle cx="56" cy="63" r="17" fill="none" stroke="#1A5FB4" stroke-width="5"/><path d="M56 53 v11 l8 5" fill="none" stroke="#1A5FB4" stroke-width="5" stroke-linecap="round"/></g></g>
+</g>
+</svg>

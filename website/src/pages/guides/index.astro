@@ -1,0 +1,48 @@
+---
+import { getCollection } from "astro:content";
+import Base from "../../layouts/Base.astro";
+import Header from "../../components/Header.astro";
+import Footer from "../../components/Footer.astro";
+import GuideCard from "../../components/GuideCard.astro";
+
+// GuidesPage board: two groups, each filling whole rows of three.
+const guides = (await getCollection("guides")).sort((a, b) => a.data.order - b.data.order);
+const groups = [
+  {
+    id: "everyone",
+    title: "For every Mac",
+    lede: "Where the space went and how to get it back. No Terminal needed.",
+  },
+  {
+    id: "developers",
+    title: "For developers",
+    lede: "Caches, worktrees, simulators and the servers your agents left running.",
+  },
+].map((g) => ({ ...g, guides: guides.filter((guide) => guide.data.audience === g.id) }));
+---
+<Base
+  title="Guides · Furl"
+  description="Plain-English guides to getting disk space and memory back on a Mac, with the Terminal commands to do it yourself."
+>
+  <Header />
+  <main id="main" class="guides-page">
+    <header class="guides-hero">
+      <h1>Guides</h1>
+      <p>Where your Mac's space goes, what's safe to delete, and the commands to do it yourself. Furl does the same thing in a few clicks.</p>
+    </header>
+    {groups.map((group) => (
+      <section class="guides-group" aria-labelledby={`group-${group.id}`}>
+        <div class="guides-group-head">
+          <h2 id={`group-${group.id}`}>{group.title}</h2>
+          <p>{group.lede}</p>
+        </div>
+        <div class="guide-grid">
+          {group.guides.map((guide) => (
+            <GuideCard guide={guide} featured={guide.data.featured} />
+          ))}
+        </div>
+      </section>
+    ))}
+  </main>
+  <Footer />
+</Base>

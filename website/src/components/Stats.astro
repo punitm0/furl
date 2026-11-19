@@ -1,0 +1,61 @@
+---
+// Community totals: fetched at build time, then refreshed in the browser.
+// Renders nothing until the totals pass site.communityStats' threshold, so small numbers never show.
+import { site } from "../site.config";
+import { fetchTotals, tilesFor } from "../scripts/community-stats";
+
+const enabled = Boolean(site.communityStats.totalsUrl);
+const tiles = enabled ? tilesFor(await fetchTotals()) : null;
+---
+{enabled && (
+  <section class="stats" id="stats" aria-label="Furl in numbers" hidden={!tiles}>
+    <div class="stats-grid" id="stats-grid">
+      {tiles?.map((t) => (
+        <div class="stat" data-stat={t.key}>
+          <span class={`stat-value${t.key === "disk" ? " stat-sweep" : t.key === "memory" ? " stat-memory" : ""}`}>{t.value}</span>
+          <span class="stat-label"><span class="only-desktop">{t.label}</span><span class="only-mobile">{t.short}</span></span>
+        </div>
+      ))}
+    </div>
+    <p class="stats-note">
+      <span class="only-desktop">Furl shares anonymous totals (space freed, memory freed, files compressed) for this counter. Never file names, paths or anything about you.</span>
+      <span class="only-mobile">Anonymous totals. Just numbers, never files.</span>
+    </p>
+  </section>
+)}
+
+<script>
+    import { fetchTotals, tilesFor } from "../scripts/community-stats";
+
+    const section = document.getElementById("stats");
+    const grid = document.getElementById("stats-grid");
+    // No section means the band is turned off (no totalsUrl).
+    if (section && grid) {
+      fetchTotals().then((totals) => {
+        const tiles = tilesFor(totals);
+        if (!tiles) return; // keep whatever the build rendered (or nothing)
+        grid.replaceChildren(
+          ...tiles.map((t) => {
+            const tile = document.createElement("div");
+            tile.className = "stat";
+            tile.dataset.stat = t.key;
+            const value = document.createElement("span");
+            value.className = "stat-value" + (t.key === "disk" ? " stat-sweep" : t.key === "memory" ? " stat-memory" : "");
+            value.textContent = t.value;
+            const label = document.createElement("span");
+            label.className = "stat-label";
+            const long = document.createElement("span");
+            long.className = "only-desktop";
+            long.textContent = t.label;
+            const short = document.createElement("span");
+            short.className = "only-mobile";
+            short.textContent = t.short;
+            label.append(long, short);
+            tile.append(value, label);
+            return tile;
+          }),
+        );
+        section.hidden = false;
+      });
+    }
+  </script>

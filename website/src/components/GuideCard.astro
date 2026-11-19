@@ -1,0 +1,32 @@
+---
+import type { CollectionEntry } from "astro:content";
+
+// GuidesPage board: cards sit on subgrid rows (cover, title, description, meta)
+// so a row of cards lines up even when titles wrap differently. The featured
+// card spans two columns with the cover on the left.
+interface Props {
+  guide: CollectionEntry<"guides">;
+  headingLevel?: "h2" | "h3";
+  featured?: boolean;
+}
+const { guide, headingLevel = "h3", featured = false } = Astro.props;
+const Heading = headingLevel;
+---
+{featured ? (
+  <article class="guide-card guide-card-featured">
+    <img src={guide.data.cover} alt="" width="1200" height="630" loading="lazy" decoding="async">
+    <div class="guide-card-body">
+      <span class="guide-chip">Start here</span>
+      <Heading class="guide-card-title"><a href={`/guides/${guide.id}/`}>{guide.data.title}</a></Heading>
+      <p>{guide.data.description}</p>
+      <span class="guide-meta">{guide.data.readingMinutes} min read<span class="guide-read" aria-hidden="true">Read guide →</span></span>
+    </div>
+  </article>
+) : (
+  <article class="guide-card">
+    <img src={guide.data.cover} alt="" width="1200" height="630" loading="lazy" decoding="async">
+    <Heading class="guide-card-title"><a href={`/guides/${guide.id}/`}>{guide.data.title}</a></Heading>
+    <p>{guide.data.description}</p>
+    <span class="guide-meta">{guide.data.readingMinutes} min read</span>
+  </article>
+)}

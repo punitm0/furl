@@ -1,0 +1,181 @@
+---
+import Base from "../layouts/Base.astro";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+import MacDialog from "../components/install/MacDialog.astro";
+import MacSettings from "../components/install/MacSettings.astro";
+import MacContextMenu from "../components/install/MacContextMenu.astro";
+import { githubPath } from "../site.config";
+
+const reportUrl = githubPath("/issues/new");
+---
+<Base
+  title="Opening Furl the first time · Furl"
+  description="Furl is free and open source, and it isn't notarized by Apple yet. So the first time you open it, macOS asks you to approve it. It takes about a minute, once per version."
+>
+  <Header />
+  <main id="main" class="install-page">
+    <div class="install-hero">
+      <span class="install-eyebrow">INSTALL HELP</span>
+      <h1>Opening Furl the first time</h1>
+      <p>Furl is free and open source, and it isn't notarized by Apple yet. So the first time you open it, macOS asks you to approve it. It takes about a minute, once per version.</p>
+    </div>
+
+    <!-- Revealed by the script below; without JS both step lists show, the Sonoma one under its own label. -->
+    <div class="os-tabs-wrap" data-os-tabs hidden>
+      <div class="os-tabs" role="tablist" aria-label="macOS version">
+        <button type="button" class="os-tab" role="tab" id="tab-sequoia" aria-selected="true" aria-controls="panel-sequoia">macOS 15 Sequoia and later</button>
+        <button type="button" class="os-tab" role="tab" id="tab-sonoma" aria-selected="false" aria-controls="panel-sonoma" tabindex="-1">macOS 14 Sonoma</button>
+      </div>
+    </div>
+
+    <div id="panel-sequoia" class="os-panel" aria-labelledby="tab-sequoia">
+      <ol class="install-steps">
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">1</span>
+            <div>
+              <strong>Open Furl once</strong>
+              <span>Drag Furl to Applications and double-click it. macOS shows “Furl” Not Opened. Click <strong>Done</strong>. Nothing is wrong with the file; this is how macOS treats apps that aren't notarized.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacDialog
+              title="“Furl” Not Opened"
+              body="Apple could not verify “Furl” is free of malware that may harm your Mac or compromise your privacy."
+              primary="Done"
+              secondary="Move to Trash"
+            />
+          </div>
+        </li>
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">2</span>
+            <div>
+              <strong>Go to Privacy &amp; Security</strong>
+              <span>Open <strong>System Settings</strong> from the Apple menu and choose <strong>Privacy &amp; Security</strong> in the sidebar.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacSettings>
+              <strong class="mac-pane-title">Privacy &amp; Security</strong>
+              <div class="mac-group">
+                <div class="mac-row"><span class="mac-row-label">Location Services</span><span class="mac-row-value">On ›</span></div>
+                <div class="mac-row"><span class="mac-row-label">Contacts</span><span class="mac-row-value">›</span></div>
+                <div class="mac-row"><span class="mac-row-label">Calendars</span><span class="mac-row-value">›</span></div>
+                <div class="mac-row"><span class="mac-row-label">Full Disk Access</span><span class="mac-row-value">›</span></div>
+              </div>
+              <span class="mac-hint">Scroll down to Security ↓</span>
+            </MacSettings>
+          </div>
+        </li>
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">3</span>
+            <div>
+              <strong>Click Open Anyway</strong>
+              <span>Scroll down to <strong>Security</strong>. Next to “Furl” was blocked to protect your Mac, click <strong>Open Anyway</strong>. The button appears for about an hour after step 1.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacSettings>
+              <strong class="mac-pane-section">Security</strong>
+              <div class="mac-group">
+                <div class="mac-row"><span class="mac-row-label">Allow applications from</span><span class="mac-row-value">App Store &amp; Known Developers ↕</span></div>
+                <div class="mac-row is-highlighted"><span class="mac-row-label"><strong>“Furl” was blocked to protect your Mac.</strong></span><span class="mac-inline-btn mac-ring">Open Anyway</span></div>
+              </div>
+              <div class="mac-group">
+                <div class="mac-row"><span class="mac-row-label">FileVault</span><span class="mac-row-value">On</span></div>
+                <div class="mac-row"><span class="mac-row-label">Lockdown Mode</span><span class="mac-row-value">Off</span></div>
+              </div>
+            </MacSettings>
+          </div>
+        </li>
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">4</span>
+            <div>
+              <strong>Confirm</strong>
+              <span>Click <strong>Open Anyway</strong> again, then enter your Mac password or use Touch ID. Furl opens, and macOS remembers your choice for this version.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacDialog
+              title="Open “Furl”?"
+              body="Apple is not able to verify that it is free from malware. Open it only if you trust where it came from."
+              primary="Open Anyway"
+              secondary="Cancel"
+            />
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <div id="panel-sonoma" class="os-panel" aria-labelledby="tab-sonoma">
+      <p class="os-panel-label" data-nojs-label>macOS 14 Sonoma</p>
+      <ol class="install-steps">
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">1</span>
+            <div>
+              <strong>Control-click Furl</strong>
+              <span>In <strong>Applications</strong>, Control-click (or right-click) Furl and choose <strong>Open</strong>. A double-click won't offer Open the first time.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacContextMenu />
+          </div>
+        </li>
+        <li class="install-step">
+          <div class="install-step-text">
+            <span class="install-step-num" aria-hidden="true">2</span>
+            <div>
+              <strong>Click Open</strong>
+              <span>In the dialog, click <strong>Open</strong>. Furl opens, and macOS remembers your choice for this version. If Open isn't offered, use System Settings › Privacy &amp; Security › <strong>Open Anyway</strong>, as on macOS 15.</span>
+            </div>
+          </div>
+          <div class="install-illus">
+            <MacDialog
+              title="macOS cannot verify the developer of “Furl”. Are you sure you want to open it?"
+              body="By opening this app, you will be overriding system security."
+              primary="Open"
+              secondary="Cancel"
+            />
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="install-cards">
+      <div class="install-card">
+        <strong>After each update</strong>
+        <span>macOS sees every new version as a new app. Approve it once more with the steps above, then turn Full Disk Access back on: in <strong>Privacy &amp; Security › Full Disk Access</strong>, select Furl, click <strong>−</strong>, then add it again with <strong>+</strong>. Switching the old entry off and on doesn't help. Furl reminds you when it notices.</span>
+      </div>
+      <div class="install-card">
+        <strong>Why macOS asks</strong>
+        <span>Notarization is Apple's automated check for apps signed with a paid Developer ID. Furl is a free, open-source project and isn't notarized yet; we plan to be. Until then you can read every line of the source on GitHub, compare the download's SHA-256 with the one on the release page, or build Furl yourself.</span>
+      </div>
+      <div class="install-card install-terminal">
+        <details open>
+          <summary>Comfortable with Terminal?</summary>
+          <p>This removes the download flag so macOS doesn't ask:</p>
+          <code>xattr -dr com.apple.quarantine /Applications/Furl.app</code>
+        </details>
+      </div>
+    </div>
+
+    <div class="install-stuck">
+      <svg class="only-desktop" width="40" height="40" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14.5" fill="#1C1C1C"></rect><path d="M26 52 V26 a12 12 0 0 1 12 -12" fill="none" stroke="#F2F2EE" stroke-width="6" stroke-linecap="round"></path><path d="M38 14 a7 7 0 0 1 0 14 a3.5 3.5 0 0 1 0 -7" fill="none" stroke="#5FE3B0" stroke-width="6" stroke-linecap="round"></path><path d="M17 34 H35" fill="none" stroke="#F2F2EE" stroke-width="6" stroke-linecap="round"></path></svg>
+      <div class="install-stuck-text only-desktop">
+        <strong>Still stuck?</strong>
+        <div>Open an issue with your macOS version and a screenshot. We read every one.</div>
+      </div>
+      <a href={reportUrl} class="install-stuck-btn"><span><span class="only-mobile">Still stuck? </span>Report a problem</span></a>
+    </div>
+  </main>
+  <Footer />
+</Base>
+
+<script>
+  import "../scripts/os-tabs";
+</script>

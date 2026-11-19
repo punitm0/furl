@@ -1,0 +1,46 @@
+<section class="preview" aria-label="App preview">
+  <!-- Desktop: app window mock -->
+  <div class="window only-desktop-flex">
+    <div class="window-sidebar" aria-hidden="true">
+      <div class="traffic"><span class="tl-red"></span><span class="tl-yellow"></span><span class="tl-green"></span></div>
+      <div class="sb-search"></div>
+      <div class="sb-line" style="width:70%;margin-top:8px"></div>
+      <div class="sb-line" style="width:80%"></div>
+      <div class="sb-line" style="width:64%"></div>
+      <div class="sb-line" style="width:75%"></div>
+      <div class="sb-line" style="width:58%"></div>
+    </div>
+    <div class="window-main" data-demo>
+      <div class="summary">
+        <div class="summary-text">
+          <div class="summary-label" data-demo-label>You can get back</div>
+          <div class="summary-value" data-demo-value>48.2 GB</div>
+          <div class="summary-label" data-demo-sub>of disk, and 3.1 GB of memory</div>
+        </div>
+        <button type="button" class="summary-cta" data-demo-cta>Clean 48.2 GB</button>
+        <span class="sr-only" role="status" data-demo-status></span>
+      </div>
+      <div class="tiles">
+        <button type="button" class="tile" aria-pressed="true" data-disk="21.4"><span class="tile-head"><span class="tile-title">Caches &amp; Junk</span><span class="tile-mark" aria-hidden="true"></span></span><span class="tile-value">21.4 GB</span><span class="tile-bar" aria-hidden="true"><span></span></span></button>
+        <button type="button" class="tile" aria-pressed="true" data-disk="9.8"><span class="tile-head"><span class="tile-title">Merged Worktrees</span><span class="tile-mark" aria-hidden="true"></span></span><span class="tile-value">9.8 GB</span><span class="tile-bar" aria-hidden="true"><span></span></span></button>
+        <button type="button" class="tile" aria-pressed="true" data-ram="3.1"><span class="tile-head"><span class="tile-title">Leftover Processes</span><span class="tile-mark" aria-hidden="true"></span></span><span class="tile-value">3.1 GB RAM</span><span class="tile-bar" aria-hidden="true"><span></span></span></button>
+      </div>
+    </div>
+  </div>
+  <p class="demo-hint only-desktop-flex" data-demo-hint>Try it: click a card to leave it out, then Clean. Nothing on your Mac is touched.</p>
+  <!-- Mobile: summary card -->
+  <div class="mobile-summary only-mobile-flex">
+    <div class="summary-label">You can get back</div>
+    <div class="summary-value">48.2 GB</div>
+    <div class="summary-label">of disk, and 3.1 GB of memory</div>
+    <div class="mobile-rows">
+      <div class="mobile-row"><span>Caches &amp; Junk</span><strong>21.4 GB</strong></div>
+      <div class="mobile-row"><span>Merged worktrees</span><strong>9.8 GB</strong></div>
+      <div class="mobile-row"><span>Leftover processes</span><strong>3.1 GB RAM</strong></div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import "../scripts/preview-demo";
+</script>

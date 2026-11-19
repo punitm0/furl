@@ -1,0 +1,48 @@
+---
+import LegalPage from "../components/LegalPage.astro";
+import { site } from "../site.config";
+
+const LAST_UPDATED = "19 November 2026";
+const CONTACT_EMAIL = "hello@getfurl.app";
+
+const toc = [
+  { id: "app", label: "The app" },
+  { id: "paying", label: "Paying" },
+  { id: "use", label: "Use at your own risk" },
+  { id: "other", label: "Everything else" },
+];
+---
+<LegalPage
+  title="Terms of Service · Furl"
+  description="The terms for downloading Furl and the optional pay-what-you-want purchase."
+  eyebrow="TERMS OF SERVICE"
+  heading="Terms of Service"
+  intro="These terms cover paying for Furl and using this website. Your rights to use, copy and change the app come from its open-source license."
+  updated={LAST_UPDATED}
+  toc={toc}
+>
+  <section id="app" class="doc-section" aria-labelledby="app-title">
+    <h2 id="app-title">The app</h2>
+    <p>Furl is a free, open-source macOS app (macOS 14+) from an independent developer, under its <a href={`${site.githubUrl}/blob/main/LICENSE`}>open-source license</a>, which these terms don't limit. Source on <a href={site.githubUrl}>GitHub</a>.</p>
+  </section>
+
+  <section id="paying" class="doc-section" aria-labelledby="paying-title">
+    <h2 id="paying-title">Paying</h2>
+    <ul>
+      <li>Pay US$1 to US$1,000 once, or download free. Every feature is the same.</li>
+      <li>No subscription, account or licence key.</li>
+      <li>Dodo Payments is the merchant of record and handles checkout, tax and receipts under its terms. We never see your card.</li>
+      <li>Full refund within 30 days, no questions asked (<a href="/refunds">Refund Policy</a>).</li>
+    </ul>
+  </section>
+
+  <section id="use" class="doc-section" aria-labelledby="use-title">
+    <h2 id="use-title">Use at your own risk</h2>
+    <p>Furl removes files you select. By default they go to the Trash; permanently deleted files can't be restored, so keep backups. Furl comes "as is", without warranty. As far as the law allows, we're not liable for lost data or indirect damage, and our liability is capped at what you paid. Your consumer rights are unaffected.</p>
+  </section>
+
+  <section id="other" class="doc-section" aria-labelledby="other-title">
+    <h2 id="other-title">Everything else</h2>
+    <p>Governed by the laws of India. If these terms change, the date above changes. Questions: <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
+  </section>
+</LegalPage>

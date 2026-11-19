@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sweepmac-stats",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-18",
+  // Only the default handler is needed; no node: modules.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "traces": { "enabled": true }
+  },
+  // Public URL is set in README step 5 (custom domain recommended: the Cache API used for
+  // /v1/totals is a no-op on *.workers.dev).
+  "workers_dev": true,
+  // Keep workers.dev on: shipped app builds report there. New builds and the site use the custom domain.
+  "routes": [{ "pattern": "stats.getfurl.app", "custom_domain": true }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sweepmac-stats",
+      // Paste the id printed by `npx wrangler d1 create sweepmac-stats` (README step 1).
+      "database_id": "86ed9800-f753-42c6-bc38-2ff26a3d8951",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ratelimits": [
+    {
+      // Per install id. The app sends at most a few requests a day.
+      "name": "REPORT_LIMIT_INSTALL",
+      "namespace_id": "41001",
+      "simple": { "limit": 6, "period": 60 }
+    },
+    {
+      // Per client IP (transient key only; IPs are never stored).
+      "name": "REPORT_LIMIT_IP",
+      "namespace_id": "41002",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
+  "vars": {
+    // "owner/repo" whose GitHub release downloads are reported as `downloads` in /v1/totals. Empty = null.
+    "DOWNLOADS_GITHUB_REPO": "punitm0/furl",
+    // Dodo Payments static link for the Pay What You Want product, served at GET /v1/support so
+    // shipped apps pick it up without an update. e.g. "https://checkout.dodopayments.com/buy/pdt_…"
+    // (test mode: test.checkout.dodopayments.com). Not a secret. Empty = {"checkoutUrl": null}.
+    // Empty until Dodo approves the product, so apps show no pay link.
+    "DODO_CHECKOUT_URL": ""
+  },
+  "secrets": {
+    // HMAC speed-bump key (see src/hmac.ts). Set with `npx wrangler secret put REPORT_HMAC_KEY`.
+    "required": ["REPORT_HMAC_KEY"]
+  }
+}
