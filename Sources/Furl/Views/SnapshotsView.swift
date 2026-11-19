@@ -63,20 +63,38 @@ struct SnapshotsView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("SNAPSHOTS").font(Theme.micro).tracking(0.5).foregroundStyle(Theme.inkSecondary)
-                Text("Why is my disk full?")
-                    .font(Theme.display(30, weight: .semibold))
-                    .tracking(-0.4)
-                    .foregroundStyle(Theme.ink)
-                headline.font(.system(size: 14)).foregroundStyle(Theme.inkTertiary)
+        // The range tabs move under the title when the page is narrow (cleanup tray open) instead
+        // of being squeezed to "This mo…".
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 16) {
+                headerTitle
+                    .frame(minWidth: 300, idealWidth: 300, maxWidth: .infinity, alignment: .leading)
+                rangeTabsControl
             }
-            Spacer(minLength: 12)
-            PillTabs(tabs: rangeTabs, selection: $model.range, title: rangeTitle)
+            VStack(alignment: .leading, spacing: 12) {
+                headerTitle
+                rangeTabsControl
+            }
+        }
+    }
+
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("SNAPSHOTS").font(Theme.micro).tracking(0.5).foregroundStyle(Theme.inkSecondary)
+            Text("Why is my disk full?")
+                .font(Theme.display(30, weight: .semibold))
+                .tracking(-0.4)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+            headline.font(.system(size: 14)).foregroundStyle(Theme.inkTertiary)
+        }
+    }
+
+    private var rangeTabsControl: some View {
+        PillTabs(tabs: rangeTabs, selection: $model.range, title: rangeTitle)
+            .fixedSize()
             .disabled(model.summaries.count < 2)
             .opacity(model.summaries.count < 2 ? 0.5 : 1)
-        }
     }
 
     private var headline: Text {
@@ -196,9 +214,14 @@ struct SnapshotsView: View {
             .chartYAxis(.hidden)
             .chartXAxis {
                 if points.count <= 7 {
-                    AxisMarks(values: points.map(\.date)) { _ in AxisValueLabel(format: axisFormat(points)) }
+                    AxisMarks(values: points.map(\.date)) { _ in
+                        // Snapshots minutes apart would print the same time twice; skip overlaps.
+                        AxisValueLabel(format: axisFormat(points), collisionResolution: .greedy)
+                    }
                 } else {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: axisFormat(points)) }
+                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                        AxisValueLabel(format: axisFormat(points), collisionResolution: .greedy)
+                    }
                 }
             }
             .frame(height: 96)

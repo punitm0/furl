@@ -414,7 +414,10 @@ private struct AutomationSettingsTab: View {
                 Toggle(isOn: $store.autoSweepEnabled.withSideEffect(requestNotifications)) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Auto-Sweep").font(.headline)
-                        Text("Safe chores Furl does by itself. Files go to the Trash first and show up in History below.")
+                        // Off, the caption says plainly that the switch is what runs the rules below.
+                        Text(store.autoSweepEnabled
+                             ? "Safe chores Furl does by itself. Files go to the Trash first and show up in History below."
+                             : "Off. Turn it on to run the rules below.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -434,14 +437,21 @@ private struct AutomationSettingsTab: View {
                 }
             }
 
-            Section("Rules") {
+            Section {
                 ruleRow(
                     isOn: $store.cachesEnabled,
                     title: "Clean caches and stale node_modules",
                     caption: "Safe caches, plus build and dependency folders not used in \(store.cachesUnusedDays) days"
                 ) {
-                    Stepper("\(store.cachesUnusedDays) days", value: $store.cachesUnusedDays, in: 7...365, step: 7)
-                        .fixedSize()
+                    // A labelled Stepper inside a Form lays out as a full-width form row and squeezes the
+                    // rule's title; a plain label beside a label-less Stepper keeps it compact.
+                    HStack(spacing: 6) {
+                        Text("\(store.cachesUnusedDays) days")
+                            .monospacedDigit()
+                            .dimmedWhenDisabled()
+                        Stepper("Days unused", value: $store.cachesUnusedDays, in: 7...365, step: 7)
+                            .labelsHidden()
+                    }
                 }
                 if store.cachesEnabled {
                     scheduleRow
@@ -485,7 +495,7 @@ private struct AutomationSettingsTab: View {
                     title: "Tidy Downloads",
                     caption: "Installer images over a week old, unfinished downloads, archives you already unzipped"
                 ) {
-                    Text("Daily").foregroundStyle(.secondary)
+                    Text("Daily").foregroundStyle(.secondary).dimmedWhenDisabled()
                 }
 
                 if store.compressColdFolders != nil {
@@ -503,6 +513,9 @@ private struct AutomationSettingsTab: View {
                         .fixedSize()
                     }
                 }
+            } header: {
+                // The heading fades with the rules so the whole group reads as off.
+                Text("Rules").dimmedWhenDisabled()
             }
             .disabled(!store.autoSweepEnabled)
 
@@ -525,7 +538,11 @@ private struct AutomationSettingsTab: View {
 
             Section {
                 HStack {
-                    if let next = store.nextRunDescription {
+                    if !store.autoSweepEnabled {
+                        Text("Auto-Sweep is off.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else if let next = store.nextRunDescription {
                         Text("Next run \(next)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -561,22 +578,27 @@ private struct AutomationSettingsTab: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
+            .dimmedWhenDisabled()
+            // The text takes the spare width first; otherwise a wide trailing control squeezes the title
+            // to one letter per line.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
             trailing()
+                .fixedSize()
                 .disabled(!isOn.wrappedValue)
         }
     }
 
     private var scheduleRow: some View {
         HStack(spacing: 6) {
-            Text("Runs")
+            Text("Runs").dimmedWhenDisabled()
             FurlPopUp("Runs", selection: $store.frequency, value: store.frequency.rawValue) {
                 ForEach(AutoSweepFrequency.allCases) { Text($0.rawValue).tag($0) }
             }
             .labelsHidden()
             .fixedSize()
             if store.frequency == .weekly {
-                Text("on")
+                Text("on").dimmedWhenDisabled()
                 FurlPopUp("Day", selection: $store.weekday, value: "\(Calendar.current.weekdaySymbols[max(0, min(6, store.weekday - 1))])s") {
                     ForEach(1...7, id: \.self) { day in
                         Text("\(Calendar.current.weekdaySymbols[day - 1])s").tag(day)
@@ -585,9 +607,9 @@ private struct AutomationSettingsTab: View {
                 .labelsHidden()
                 .fixedSize()
             } else if store.frequency == .monthly {
-                Text("on the 1st").foregroundStyle(.secondary)
+                Text("on the 1st").foregroundStyle(.secondary).dimmedWhenDisabled()
             }
-            Text("at")
+            Text("at").dimmedWhenDisabled()
             FurlPopUp("Time", selection: $store.hour, value: String(format: "%d:%02d", store.hour, store.minute)) {
                 ForEach(0..<24, id: \.self) { hour in
                     Text(String(format: "%d:%02d", hour, store.minute)).tag(hour)
@@ -732,4 +754,19 @@ private struct CommunityStatsSettingsRow: View {
         }
     }
 
+}
+
+/// A disabled Form row keeps its text at full ink, so rules looked active while Auto-Sweep was off.
+/// This fades plain text to the 45% the checkbox and pop-ups already use; don't put it on those
+/// controls themselves or they fade twice.
+private extension View {
+    func dimmedWhenDisabled() -> some View { modifier(DimWhenDisabled()) }
+}
+
+private struct DimWhenDisabled: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content.opacity(isEnabled ? 1 : 0.45)
+    }
 }

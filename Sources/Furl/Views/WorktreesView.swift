@@ -167,56 +167,78 @@ struct WorktreesView: View {
     }
 
     private var toolbarBar: some View {
-        HStack(spacing: 12) {
-            Toggle("Merged only", isOn: $vm.showOnlyCleanable)
-                .toggleStyle(.furlCheckbox)
-
-            Toggle("Delete local branch", isOn: $vm.deleteLocalBranch)
-                .toggleStyle(.furlCheckbox)
-                .help("Also run git branch -d (or -D for squash merges) after removing the worktree")
-
-            Toggle("Allow dirty worktrees", isOn: $vm.forceRemove)
-                .toggleStyle(.furlCheckbox)
-                .help("Use --force so worktrees with uncommitted changes can be removed")
-
-            Spacer()
-
-            Button("Select Safe") {
-                state.selectedWorktreeIDs = Set(state.worktrees.filter(\.canAutoSelect).map(\.id))
+        // One row when it fits; on a narrow page (cleanup tray open) the actions drop under the
+        // options, then the options stack. Labels never wrap mid-phrase.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                toolbarOptions
+                Spacer(minLength: 12)
+                toolbarActions
             }
-            .fontWeight(.medium)
-            .help("Select merged, clean, unlocked worktrees")
-            .disabled(state.worktrees.isEmpty)
-
-            Button("Prune Stale") {
-                Task { await state.pruneAllWorktrees() }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) { toolbarOptions }
+                HStack(spacing: 12) { toolbarActions }
             }
-            .fontWeight(.medium)
-            .help("Run `git worktree prune` to drop metadata for worktrees whose folders are gone")
-            .disabled(state.worktrees.isEmpty)
-
-            if state.isScanningWorktrees {
-                // SmallItemsStates: 12 pt spinner, 6 pt gap, "Refreshing…" in caption inkSecondary.
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("Refreshing…").font(Theme.caption).foregroundStyle(Theme.inkSecondary)
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) { toolbarOptions }
+                HStack(spacing: 12) { toolbarActions }
             }
-
-            Button {
-                Task { await state.scanWorktrees() }
-            } label: {
-                Label("Rescan", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(ToolbarButtonStyle())
-            .disabled(state.isScanningWorktrees)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .controlSize(.small)
         .font(.system(size: 12))
         .padding(.horizontal, Theme.Space.page)
         .padding(.vertical, 10)
         .background(Theme.ground)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.border).frame(height: 1) }
+    }
+
+    @ViewBuilder private var toolbarOptions: some View {
+        Toggle("Merged only", isOn: $vm.showOnlyCleanable)
+            .toggleStyle(.furlCheckbox)
+            .fixedSize()
+
+        Toggle("Delete local branch", isOn: $vm.deleteLocalBranch)
+            .toggleStyle(.furlCheckbox)
+            .fixedSize()
+            .help("Also run git branch -d (or -D for squash merges) after removing the worktree")
+
+        Toggle("Allow dirty worktrees", isOn: $vm.forceRemove)
+            .toggleStyle(.furlCheckbox)
+            .fixedSize()
+            .help("Use --force so worktrees with uncommitted changes can be removed")
+    }
+
+    @ViewBuilder private var toolbarActions: some View {
+        Button("Select Safe") {
+            state.selectedWorktreeIDs = Set(state.worktrees.filter(\.canAutoSelect).map(\.id))
+        }
+        .fontWeight(.medium)
+        .help("Select merged, clean, unlocked worktrees")
+        .disabled(state.worktrees.isEmpty)
+
+        Button("Prune Stale") {
+            Task { await state.pruneAllWorktrees() }
+        }
+        .fontWeight(.medium)
+        .help("Run `git worktree prune` to drop metadata for worktrees whose folders are gone")
+        .disabled(state.worktrees.isEmpty)
+
+        if state.isScanningWorktrees {
+            // SmallItemsStates: 12 pt spinner, 6 pt gap, "Refreshing…" in caption inkSecondary.
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Refreshing…").font(Theme.caption).foregroundStyle(Theme.inkSecondary)
+            }
+        }
+
+        Button {
+            Task { await state.scanWorktrees() }
+        } label: {
+            Label("Rescan", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(ToolbarButtonStyle())
+        .disabled(state.isScanningWorktrees)
     }
 
     private func worktreeRow(_ item: WorktreeItem) -> some View {

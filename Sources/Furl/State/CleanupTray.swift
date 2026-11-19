@@ -323,7 +323,7 @@ final class CleanupTray: ObservableObject {
         var counted: [String] = []
         var total: Int64 = 0
         for item in sorted {
-            if !item.isPseudoPath, counted.contains(where: { item.path.hasPrefix($0 + "/") }) { continue }
+            if !item.isPseudoPath, counted.contains(where: { item.path == $0 || item.path.hasPrefix($0 + "/") }) { continue }
             if !item.isPseudoPath { counted.append(item.path) }
             total += item.bytes
         }
@@ -395,5 +395,67 @@ extension TrayItem {
 
     private static func parentFolder(_ path: String) -> String {
         (URL(fileURLWithPath: path).deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+    }
+}
+
+// MARK: - Overview hero
+
+extension TrayItem {
+    /// Everything the Overview hero total counts, for "Review items first". Ticked the way each section
+    /// pre-selects: Safe junk and mergeable worktrees. Review-rated or permanent junk, app leftovers and
+    /// duplicate copies are listed unticked. Leftovers are a guess (a Library entry no installed app
+    /// claims), and the Leftovers screen never pre-selects them either.
+    /// Like `AppState.totalReclaimableBytes`, an item inside a ticked item is left out: it goes with it.
+    /// The Trash's size is part of the hero total too, but it isn't an item the tray can hold.
+    static func reclaimable(
+        junk: [JunkItem],
+        worktrees: [WorktreeItem],
+        leftovers: [OrphanedAppDataGroup],
+        duplicates: [DuplicateGroup]
+    ) -> [TrayItem] {
+        var candidates: [TrayItem] = []
+        candidates += worktrees.filter(\.canAutoSelect).map { TrayItem.worktree($0) }
+        candidates += junk.map { item in
+            var tray = TrayItem.junk(item)
+            tray.included = item.risk == .safe && !item.isPermanent
+            return tray
+        }
+        candidates += leftovers.flatMap { group in
+            group.items.map { item in
+                var tray = TrayItem.leftover(item, appName: group.displayName)
+                tray.included = false
+                return tray
+            }
+        }
+
+        // Shortest paths first, so a parent is seen before anything inside it. The same folder can be
+        // both junk and an app leftover (a tool's cache): it's listed once, ticked only if junk ticks it.
+        candidates.sort { ($0.path.count, $0.included ? 0 : 1) < ($1.path.count, $1.included ? 0 : 1) }
+        var ticked: [String] = []
+        var listed = Set<String>()
+        func insideTicked(_ path: String) -> Bool {
+            ticked.contains { path.hasPrefix($0 + "/") }
+        }
+        var result: [TrayItem] = []
+        for item in candidates {
+            if !item.isPseudoPath {
+                if insideTicked(item.path) || !listed.insert(item.path).inserted { continue }
+                if item.included { ticked.append(item.path) }
+            }
+            result.append(item)
+        }
+
+        // Duplicates: every copy but the one that costs least to keep, matching `reclaimableBytes`.
+        for group in duplicates {
+            guard let minimum = group.files.map(\.privateBytes).min(),
+                  let keeper = DuplicateKeepRule.oldest.keeper(in: group.files.filter { $0.privateBytes == minimum })
+            else { continue }
+            for file in group.files where file.id != keeper.id && !insideTicked(file.path) && !listed.contains(file.path) {
+                var tray = TrayItem.duplicate(file, in: group)
+                tray.included = false
+                result.append(tray)
+            }
+        }
+        return result
     }
 }

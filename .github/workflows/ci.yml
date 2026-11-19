@@ -13,7 +13,7 @@ jobs:
     # Smart Review's on-device model is only compiled with the macOS 26 SDK or later; Toolchain shows which Xcode ran.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Toolchain
         run: xcodebuild -version && swift --version
       - name: Build (release)
@@ -27,8 +27,8 @@ jobs:
       run:
         working-directory: stats-worker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -43,8 +43,8 @@ jobs:
       run:
         working-directory: website
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

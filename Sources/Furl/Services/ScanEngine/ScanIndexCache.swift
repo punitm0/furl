@@ -56,24 +56,79 @@ actor ScanIndexCache {
                 }
             }
         }
-        let result = await task.value
+        let outcome = await Self.wait(for: task, unlessStopped: progress)
         mirror?.cancel()
-        if inFlight == task {
-            inFlight = nil
-            walkProgress = nil
-            if let result {
-                if current !== result, let onRefresh { Task.detached(priority: .utility) { onRefresh(result) } }
-                current = result
-                refreshedAt = Date()
-            }
+        guard case .finished(let result) = outcome else {
+            // Stopped: return now (the walk can take minutes) and record the result when it lands.
+            Task { let result = await task.value; self.settle(task, result: result) }
+            return nil
         }
+        settle(task, result: result)
         if progress?.isCancelled == true { return nil }
         return result
+    }
+
+    private func settle(_ task: Task<FileIndex?, Never>, result: FileIndex?) {
+        guard inFlight == task else { return }
+        inFlight = nil
+        walkProgress = nil
+        if let result {
+            if current !== result, let onRefresh { Task.detached(priority: .utility) { onRefresh(result) } }
+            current = result
+            refreshedAt = Date()
+        }
+    }
+
+    enum WaitOutcome: Sendable {
+        case finished(FileIndex?)
+        case stopped
+    }
+
+    /// Waits for the shared walk, or returns `.stopped` soon after `progress` is cancelled. Awaiting
+    /// `task.value` alone can't be interrupted, so Stop did nothing until the whole walk had finished.
+    static func wait(for task: Task<FileIndex?, Never>, unlessStopped progress: ScanProgress?,
+                     pollInterval: UInt64 = 100_000_000) async -> WaitOutcome {
+        guard let progress else { return .finished(await task.value) }
+        if progress.isCancelled { return .stopped }
+        let gate = ResumeOnce<WaitOutcome>()
+        return await withCheckedContinuation { continuation in
+            gate.install(continuation)
+            Task.detached { gate.resume(.finished(await task.value)) }
+            Task.detached {
+                while !gate.isResumed {
+                    if progress.isCancelled { gate.resume(.stopped); return }
+                    try? await Task.sleep(nanoseconds: pollInterval)
+                }
+            }
+        }
     }
 
     /// Forget the in-memory copy (e.g. after a big cleanup) so the next call replays FSEvents immediately.
     func markStale() {
         refreshedAt = .distantPast
+    }
+}
+
+/// Resumes a continuation exactly once, whichever of several racers gets there first.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    private var resumed = false
+
+    var isResumed: Bool { lock.withLock { resumed } }
+
+    func install(_ continuation: CheckedContinuation<T, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func resume(_ value: T) {
+        let pending: CheckedContinuation<T, Never>? = lock.withLock {
+            guard !resumed else { return nil }
+            resumed = true
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
     }
 }
 

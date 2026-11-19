@@ -69,7 +69,7 @@ struct LargeFilesView: View {
                     systemImage: "checkmark.seal",
                     title: state.largeFiles.isEmpty ? "No Large Files" : "No Matches",
                     message: state.largeFiles.isEmpty
-                        ? "No files over \(thresholdLabel) were found in your home folder."
+                        ? "No files over \(thresholdLabel) were found in your home folder. Library and hidden folders aren't included."
                         : "Try a different type or search."
                 )
             } else {

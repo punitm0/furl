@@ -69,28 +69,43 @@ struct DashboardView: View {
     private var header: some View {
         ScreenHeader(title: "Overview", subtitle: headerSubtitle) {
             weekGrowthHint
+            // The badge gives way as the page narrows (cleanup tray open): full, then compact,
+            // then gone. It shares a ViewThatFits with the Scan button because an EmptyView
+            // choice is no choice at all: ViewThatFits fell back to the compact badge and clipped
+            // it to one letter.
             ViewThatFits(in: .horizontal) {
-                PrivacyBadge()
-                PrivacyBadge(compact: true)
-                EmptyView()
+                HStack(spacing: 12) {
+                    PrivacyBadge()
+                    scanButton
+                }
+                HStack(spacing: 12) {
+                    PrivacyBadge(compact: true)
+                    scanButton
+                }
+                scanButton
             }
-            Button {
-                Task { await state.scanAll() }
-            } label: {
-                HStack(spacing: 6) {
-                    if state.isScanningAny {
-                        ProgressView().controlSize(.small)
-                        Text("Scanning…")
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                        Text(state.hasScannedAnything ? "Rescan" : "Scan All")
-                    }
+        }
+    }
+
+    private var scanButton: some View {
+        Button {
+            Task { await state.scanAll() }
+        } label: {
+            HStack(spacing: 6) {
+                if state.isScanningAny {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning…")
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                    Text(state.hasScannedAnything ? "Rescan" : "Scan All")
                 }
             }
-            .buttonStyle(SweepButtonStyle(kind: .secondary))
-            .disabled(state.isScanningAny)
-            .help("Scan everything (⌘R)")
         }
+        .buttonStyle(SweepButtonStyle(kind: .secondary))
+        // Never squeezed to an icon and a sliver when the tray narrows the page.
+        .fixedSize()
+        .disabled(state.isScanningAny)
+        .help("Scan everything (⌘R)")
     }
 
     /// One-time banner on the first launch of a new version when Full Disk Access is off
@@ -129,10 +144,16 @@ struct DashboardView: View {
             .accessibilityLabel("Dismiss")
         }
         .font(.system(size: 12))
-        .padding(.horizontal, Theme.Space.page)
+        .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity)
-        .background(Theme.mintTint)
+        // An inset card with the same corners as the cards below it, not a square strip.
+        .background(Theme.mintTint, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .padding(.horizontal, Theme.Space.page)
+        .padding(.top, 12)
+        // Same column as the page below, so its edges line up with the cards.
+        .frame(maxWidth: 1180)
+        .frame(maxWidth: .infinity)
     }
 
     /// "+X GB this week" from saved snapshots; opens Snapshots › Why is my disk full?
@@ -263,121 +284,32 @@ struct DashboardView: View {
     }
 
     private var heroPanel: some View {
-        let disk = state.diskUsage
-        let total = Double(max(disk.totalBytes, 1))
-        let usedOther = max(0, disk.usedBytes - reclaimable)
-
         // Main board: padding 28, gap 32 between ring, text and buttons; minimum height 216.
-        return HStack(alignment: .center, spacing: 32) {
-            DiskRing(
-                usedFraction: Double(usedOther) / total,
-                freeableFraction: Double(reclaimable) / total,
-                centerText: "\(Int((disk.usedFraction * 100).rounded()))%",
-                caption: "used today",
-                inUseBytes: usedOther,
-                freeableBytes: heroPhase == .notScanned || heroPhase == .firstScanEmpty ? nil : reclaimable,
-                freeBytes: disk.availableBytes,
-                scanning: state.isScanningAny
-            )
-            .frame(width: 168, height: 168)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text(heroEyebrow)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.pineMuted)
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 14) {
-                        bigNumber(64)
-                        if showsNumber { heroSuffix }
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        bigNumber(52)
-                        if showsNumber { heroSuffix }
-                    }
-                }
-                if heroPhase == .firstScanEmpty {
-                    // HeroScanning board: the number slot's progress, bar over the activity line.
-                    VStack(alignment: .leading, spacing: 6) {
-                        HeroProgressBar(fraction: scanFraction)
-                        Text(scanActivity)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.pineMuted)
-                            .lineLimit(1)
-                            .contentTransition(.opacity)
-                    }
-                    .frame(maxWidth: 520)
-                } else if state.isScanningAny {
-                    // Motion board (as built): 220 pt bar with the activity line beside it.
-                    HStack(spacing: 10) {
-                        HeroProgressBar(fraction: scanFraction)
-                            .frame(maxWidth: 220)
-                        Text(scanActivity)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.pineMuted)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-                if heroPhase == .firstScanPartial {
-                    areaChips
-                } else if !heroBody.isEmpty {
-                    Text(heroBody)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.pineMuted)
-                        .lineSpacing(3)
-                        .frame(maxWidth: 470, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack(spacing: 14) {
-                    heroLegend(.filled(Theme.pineMuted), label: "In use \(FileSizeHelper.formatBytes(usedOther))")
-                    if heroPhase != .notScanned {
-                        heroLegend(heroPhase == .firstScanEmpty ? .dashed(Theme.mint) : .filled(Theme.mint), label: canFreeLegend)
-                    }
-                    heroLegend(.outline, label: "Free \(FileSizeHelper.formatBytes(disk.availableBytes))")
-                }
-                .padding(.top, 4)
+        // The ring (168) and button column (210) are fixed, so the three columns need about 800 pt.
+        // With the cleanup tray open, or in a small window, the page is narrower than that: the text
+        // column was squeezed to zero width and vanished, and its words, wrapped one letter per line,
+        // made the panel hundreds of points tall. Narrower pages move the buttons under the text,
+        // then the ring above it, so every part keeps a usable width.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 32) {
+                heroRing
+                heroText(idealWidth: Self.heroTextIdealWidth, legendInRow: true)
+                VStack(spacing: 12) { heroButtons }
+                    .frame(width: 210)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            // The figure changes width as it counts; the column takes the space it's given instead.
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            VStack(spacing: 12) {
-                // Takes the user to the first category with something selected. A future
-                // `AppState.cleanAllSafeItems()` could clean every category's safe items in one
-                // pass with a single undo record.
-                Button {
-                    if heroPhase == .notScanned {
-                        Task { await state.scanAll() }
-                    } else {
-                        state.selectedSection = firstCategoryWithSelection
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        if heroPhase == .firstScanEmpty || heroPhase == .firstScanPartial {
-                            HeroSpinner()
-                        }
-                        Text(heroButtonTitle)
-                            .monospacedDigit()
-                    }
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(alignment: .center, spacing: 32) {
+                    heroRing
+                    heroText(idealWidth: Self.heroTextNarrowIdealWidth, legendInRow: false)
                 }
-                .buttonStyle(SweepButtonStyle(kind: .heroPrimary, height: 48, fullWidth: true))
-                .disabled(heroPhase != .notScanned && (heroPhase != .done || reclaimable == 0 || state.isCleaning))
-                .help("Go to the items that are selected for cleaning")
-
-                if heroPhase == .done && reclaimable == 0 {
-                    // HeroScanning board, "Done, nothing to free".
-                    Button("Rescan") {
-                        Task { await state.scanAll() }
-                    }
-                    .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 44, fullWidth: true))
-                } else {
-                    Button("Review items first") {
-                        state.selectedSection = .smartReview
-                    }
-                    .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 44, fullWidth: true))
-                }
+                HStack(spacing: 12) { heroButtons }
             }
-            .frame(width: 210)
-            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 24) {
+                heroRing
+                heroText(idealWidth: 0, legendInRow: false)
+                VStack(spacing: 12) { heroButtons }
+            }
         }
         .padding(28)
         .frame(minHeight: 216)
@@ -390,6 +322,155 @@ struct DashboardView: View {
                 scanNow = Date()
                 try? await Task.sleep(for: .milliseconds(125))
             }
+        }
+    }
+
+    /// Width the text column asks for beside the ring and buttons; below it the buttons move under.
+    private static let heroTextIdealWidth: CGFloat = 320
+    /// Width it asks for beside the ring alone; below it the ring moves above the text.
+    private static let heroTextNarrowIdealWidth: CGFloat = 200
+
+    private var heroUsedOther: Int64 {
+        max(0, state.diskUsage.usedBytes - reclaimable)
+    }
+
+    private var heroRing: some View {
+        let disk = state.diskUsage
+        let total = Double(max(disk.totalBytes, 1))
+        return DiskRing(
+            usedFraction: Double(heroUsedOther) / total,
+            freeableFraction: Double(reclaimable) / total,
+            centerText: "\(Int((disk.usedFraction * 100).rounded()))%",
+            caption: "used today",
+            inUseBytes: heroUsedOther,
+            freeableBytes: heroPhase == .notScanned || heroPhase == .firstScanEmpty ? nil : reclaimable,
+            freeBytes: disk.availableBytes,
+            scanning: state.isScanningAny
+        )
+        .frame(width: 168, height: 168)
+    }
+
+    /// `idealWidth` is what the column asks for while the hero layouts choose between themselves;
+    /// once placed it takes whatever width it's given. `legendInRow` comes from the layout, never from
+    /// the labels' width, so the legend doesn't flip between one line and three as the numbers change.
+    private func heroText(idealWidth: CGFloat, legendInRow: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(heroEyebrow)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.pineMuted)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 14) {
+                    bigNumber(64)
+                    if showsNumber { heroSuffix }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    bigNumber(52)
+                    if showsNumber { heroSuffix }
+                }
+            }
+            if heroPhase == .firstScanEmpty {
+                // HeroScanning board: the number slot's progress, bar over the activity line.
+                VStack(alignment: .leading, spacing: 6) {
+                    HeroProgressBar(fraction: scanFraction)
+                    Text(scanActivity)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.pineMuted)
+                        .lineLimit(1)
+                        .contentTransition(.opacity)
+                }
+                .frame(maxWidth: 520)
+            } else if state.isScanningAny {
+                // Motion board (as built): 220 pt bar with the activity line beside it.
+                HStack(spacing: 10) {
+                    HeroProgressBar(fraction: scanFraction)
+                        .frame(maxWidth: 220)
+                    Text(scanActivity)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.pineMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            if heroPhase == .firstScanPartial {
+                areaChips
+            } else if !heroBody.isEmpty {
+                Text(heroBody)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.pineMuted)
+                    .lineSpacing(3)
+                    .frame(maxWidth: 470, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // One row beside the buttons (the design); in the narrower layouts, stacked. A tight row
+            // shrinks its text a little rather than wrapping.
+            Group {
+                if legendInRow {
+                    HStack(spacing: 14) { heroLegends }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) { heroLegends }
+                }
+            }
+            .padding(.top, 4)
+        }
+        // The figure changes width as it counts; the column takes the space it's given instead.
+        .frame(minWidth: 0, idealWidth: idealWidth, maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var heroLegends: some View {
+        heroLegend(.filled(Theme.pineMuted), label: "In use \(FileSizeHelper.formatBytes(heroUsedOther))")
+        if heroPhase != .notScanned {
+            heroLegend(heroPhase == .firstScanEmpty ? .dashed(Theme.mint) : .filled(Theme.mint), label: canFreeLegend)
+        }
+        heroLegend(.outline, label: "Free \(FileSizeHelper.formatBytes(state.diskUsage.availableBytes))")
+    }
+
+    @ViewBuilder
+    private var heroButtons: some View {
+        // Takes the user to the first category with something selected. A future
+        // `AppState.cleanAllSafeItems()` could clean every category's safe items in one
+        // pass with a single undo record.
+        Button {
+            if heroPhase == .notScanned {
+                Task { await state.scanAll() }
+            } else {
+                state.selectedSection = firstCategoryWithSelection
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if heroPhase == .firstScanEmpty || heroPhase == .firstScanPartial {
+                    HeroSpinner()
+                }
+                Text(heroButtonTitle)
+                    .monospacedDigit()
+            }
+        }
+        .buttonStyle(SweepButtonStyle(kind: .heroPrimary, height: 48, fullWidth: true))
+        .disabled(heroPhase != .notScanned && (heroPhase != .done || reclaimable == 0 || state.isCleaning))
+        .help("Go to the items that are selected for cleaning")
+
+        if heroPhase == .done && reclaimable == 0 {
+            // HeroScanning board, "Done, nothing to free".
+            Button("Rescan") {
+                Task { await state.scanAll() }
+            }
+            .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 44, fullWidth: true))
+        } else {
+            // Puts exactly what the total counts in the cleanup tray, ticked the way each section
+            // pre-selects, so it can be looked over and cleaned in one go.
+            Button("Review items first") {
+                CleanupTray.shared.add(TrayItem.reclaimable(
+                    junk: state.junkItems,
+                    worktrees: state.worktrees,
+                    leftovers: state.orphanedGroups,
+                    duplicates: state.duplicateGroups
+                ))
+            }
+            .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 44, fullWidth: true))
+            .disabled(heroPhase != .done || state.isCleaning)
+            .help("Open the cleanup tray with the items this total counts")
         }
     }
 
@@ -471,7 +552,6 @@ struct DashboardView: View {
             }
             Text(label).monospacedDigit().lineLimit(1)
         }
-        .fixedSize()
         .font(.system(size: 12))
         .foregroundStyle(Theme.pineMuted)
     }

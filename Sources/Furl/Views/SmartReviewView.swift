@@ -63,6 +63,8 @@ private enum ClutterKind: String, CaseIterable, Identifiable {
 @MainActor
 private final class SmartReviewViewModel: ObservableObject {
     @Published var tab: VerdictTab = .junk
+    /// Set once the user clicks a tab, so automatic tab changes leave their choice alone for this visit.
+    @Published var userPickedTab = false
     @Published var kind: ClutterKind?
     @Published var sortOrder: SortOrder = .sizeDescending
     @Published var searchText = ""
@@ -123,6 +125,23 @@ struct SmartReviewView: View {
         state.smartItems.filter { $0.verdict.label == label }.count
     }
 
+    /// Scanning or relabelling with the model; counts are still moving.
+    private var isBusy: Bool { state.isScanningSmart || state.isReviewingSmart }
+
+    /// Lands on a tab that has something in it, unless the user picked a tab this visit. Likely useless
+    /// is the default; when it's empty but other tabs aren't, show All. While counts are still moving
+    /// it only steps off an empty tab, so the list doesn't jump back and forth mid-scan.
+    private func settleTab() {
+        guard !vm.userPickedTab, !state.smartItems.isEmpty else { return }
+        if count(.junk) == 0 { vm.tab = .all }
+        else if !isBusy { vm.tab = .junk }
+    }
+
+    /// The tab picker's binding: a click counts as the user's choice.
+    private var userTabSelection: Binding<VerdictTab> {
+        Binding(get: { vm.tab }, set: { vm.userPickedTab = true; vm.tab = $0 })
+    }
+
     private var usedModel: Bool {
         state.smartItems.contains { $0.verdict.source == .model }
     }
@@ -146,18 +165,22 @@ struct SmartReviewView: View {
             } else if !state.hasScannedSmart && !state.isScanningSmart {
                 intro
             } else {
-                HStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        filterBar
-                        list
-                        actionBar
+                // The list needs 380 pt beside the 320 pt details column, which still fits the
+                // smallest window. When the cleanup tray narrows the page below that, the pair
+                // overflowed both edges of the window; the list then takes the whole width and the
+                // details column steps aside.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 0) {
+                        resultsList
+                            .frame(minWidth: 380, idealWidth: 380, maxWidth: .infinity)
+                        inspector
+                            .frame(width: 320)
+                            .frame(maxHeight: .infinity)
+                            .background(Theme.surface)
+                            .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
                     }
-                    .frame(minWidth: 420)
-                    inspector
-                        .frame(width: 320)
-                        .frame(maxHeight: .infinity)
-                        .background(Theme.surface)
-                        .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
+                    resultsList
+                        .frame(minWidth: 0, maxWidth: .infinity)
                 }
             }
         }
@@ -167,13 +190,10 @@ struct SmartReviewView: View {
         .task(id: modelStatus.unavailableReason?.mayResolveSoon == true) {
             await watchModelStatus()
         }
-        .onChange(of: state.isScanningSmart) { _, scanning in
-            guard !scanning else { return }
-            // Land on a tab that has something in it.
-            if count(.junk) > 0 { vm.tab = .junk }
-            else if count(.maybe) > 0 { vm.tab = .maybe }
-            else if !state.smartItems.isEmpty { vm.tab = .all }
-        }
+        .onAppear { settleTab() }
+        .onChange(of: isBusy) { _, _ in settleTab() }
+        .onChange(of: count(.junk)) { _, _ in settleTab() }
+        .onChange(of: state.smartItems.isEmpty) { _, _ in settleTab() }
         .confirmationDialog(
             "Remove \(selectedItems.count) file\(selectedItems.count == 1 ? "" : "s")?",
             isPresented: $vm.showConfirmDialog,
@@ -290,7 +310,7 @@ struct SmartReviewView: View {
             .layoutPriority(1)
             Spacer(minLength: 12)
             if (state.hasScannedSmart || state.isScanningSmart) && !state.smartItems.isEmpty {
-                PillTabs(tabs: [VerdictTab.junk, .maybe, .keep, .all], selection: $vm.tab) { tab in
+                PillTabs(tabs: [VerdictTab.junk, .maybe, .keep, .all], selection: userTabSelection) { tab in
                     switch tab {
                     case .junk: return "Likely useless · \(count(.junk))"
                     case .maybe: return "Maybe · \(count(.maybe))"
@@ -305,6 +325,7 @@ struct SmartReviewView: View {
         .frame(minHeight: 64)
         .background(Theme.ground)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.border).frame(height: 1) }
+        .anchorPreference(key: ScreenHeaderBoundsKey.self, value: .bounds) { $0 }
     }
 
     private var filterBar: some View {
@@ -369,6 +390,14 @@ struct SmartReviewView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
+    }
+
+    private var resultsList: some View {
+        VStack(spacing: 0) {
+            filterBar
+            list
+            actionBar
+        }
     }
 
     /// Filter chip from the SmartReview board: 32pt, 8pt corners, outlined, label only.
@@ -463,7 +492,7 @@ struct SmartReviewView: View {
             }
             .padding(.horizontal, 26)
             .padding(.vertical, 24)
-            .frame(width: 720, alignment: .leading)
+            .frame(maxWidth: 720, alignment: .leading)
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
             .padding(.horizontal, Theme.Space.page)

@@ -28,11 +28,30 @@ export type Release = {
 
 export const releases: Release[] = [
   {
+    version: "1.0.1",
+    date: "19 November 2026",
+    title: "Fixes",
+    lead: "The cleanup tray fits any window, and fixes for the sidebar, Smart Review and stopped scans.",
+    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
+    improved: [
+      { lead: "Cleanup tray", text: "Sits beside the page as a card, and on a small window takes over the page until you close it or pick another screen." },
+      { lead: "Auto-Sweep", text: "With Auto-Sweep off, its rules fade out and the card says to turn it on, so it's clear nothing runs." },
+    ],
+    fixed: [
+      { lead: "Sidebar", text: "Its top rows no longer scroll out of sight after you jump to a screen from the Overview." },
+      { lead: "Review items first", text: "Opens the cleanup tray with exactly what the Overview total counts, instead of Smart Review. Only items rated Safe are ticked." },
+      { lead: "Smart Review", text: "Opens on All when nothing is rated Likely useless, and stays on a tab you pick." },
+      { lead: "Stopped scans", text: "A stopped scan no longer says nothing was found, and Stop now works while your home folder is being read." },
+      { lead: "Cleanup tray", text: "Screens keep their layout with the tray open, instead of going blank or running off the edge." },
+      { lead: "Overview", text: "The In use, Can free and Free line no longer jumps between one line and three while scanning." },
+      { lead: "Settings", text: "Automation rules no longer wrap their names one letter per line." },
+    ],
+  },
+  {
     version: "1.0.0",
     date: V1_0_DATE,
     title: "First release",
     lead: "Furl finds the caches, merged worktrees, forgotten downloads and leftover dev servers you don't need, tells you why, and uses the Trash by default so you can undo.",
-    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
     new: [
       { lead: "Overview", text: "One scan of projects, caches, apps and your home folder, then one number: how much you can get back, with a Clean button and Undo." },
       { lead: "Smart Review", text: "Finds installers for apps you already have, archives you already unzipped and recordings you never opened again, with a reason for each. Checked by Apple's on-device model." },

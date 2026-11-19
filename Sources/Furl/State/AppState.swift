@@ -360,6 +360,13 @@ final class AppState: ObservableObject {
         liveProgress[section]?.cancel()
     }
 
+    /// A stopped scan that found nothing must not read as a finished "nothing found": the area goes back
+    /// to unscanned, so its screen offers a fresh scan instead of an empty-state verdict. A stopped scan
+    /// that found something keeps its partial results on screen.
+    nonisolated static func countsAsScanned(stopped: Bool, foundAny: Bool) -> Bool {
+        !stopped || foundAny
+    }
+
     func scanWorktrees() async {
         guard !isScanningWorktrees else {
             pendingRescans.insert(.worktrees)
@@ -407,7 +414,7 @@ final class AppState: ObservableObject {
         endStream(.worktrees, stream)
         cleanupStamps.worktreesDate = Date()
         isScanningWorktrees = false
-        hasScannedWorktrees = true
+        hasScannedWorktrees = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !worktrees.isEmpty)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -466,7 +473,7 @@ final class AppState: ObservableObject {
         endStream(.junk, stream)
         cleanupStamps.junkDate = Date()
         isScanningJunk = false
-        hasScannedJunk = true
+        hasScannedJunk = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !junkItems.isEmpty)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -515,7 +522,8 @@ final class AppState: ObservableObject {
         }
         endStream(.apps, stream)
         isScanningApps = false
-        hasScannedApps = true
+        hasScannedApps = Self.countsAsScanned(stopped: progress.isCancelled,
+                                              foundAny: !installedApps.isEmpty || !orphanedGroups.isEmpty)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -572,7 +580,7 @@ final class AppState: ObservableObject {
         }
         selectedLargeFileIDs.formIntersection(Set(largeFiles.map(\.id)))
         isScanningLargeFiles = false
-        hasScannedLargeFiles = true
+        hasScannedLargeFiles = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !largeFiles.isEmpty)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -640,7 +648,7 @@ final class AppState: ObservableObject {
         // Stopped: the groups confirmed so far stay (each is complete on its own).
         let valid = Set(duplicateGroups.flatMap { $0.files.map(\.id) })
         selectedDuplicateIDs.formIntersection(valid)
-        hasScannedDuplicates = true
+        hasScannedDuplicates = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !duplicateGroups.isEmpty)
         duplicateProgress = nil
         isScanningDuplicates = false
         noteScanSectionFinished()
@@ -860,7 +868,7 @@ final class AppState: ObservableObject {
         endStream(.smartReview, stream)
         isScanningSmart = false
         selectedSmartIDs.formIntersection(Set(smartItems.map(\.id)))
-        hasScannedSmart = true
+        hasScannedSmart = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !smartItems.isEmpty)
 
         guard !progress.isCancelled else {
             smartProgress = nil

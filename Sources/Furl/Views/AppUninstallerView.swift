@@ -258,12 +258,18 @@ struct AppUninstallerView: View {
                     Spacer(minLength: 8)
                     toolbarRescan
                 }
-                if vm.mode == .orphaned && !state.orphanedGroups.isEmpty {
-                    HStack(spacing: 8) {
-                        Spacer(minLength: 0)
-                        toolbarActions(spacing: 8)
-                    }
+                toolbarActionsRow
+            }
+            // Narrower still (the cleanup tray open beside a small window): the tabs get their own
+            // row, so the bar never overflows both edges of the page.
+            VStack(alignment: .leading, spacing: 8) {
+                pillTabs
+                HStack(spacing: 8) {
+                    sortPicker
+                    Spacer(minLength: 8)
+                    toolbarRescan
                 }
+                toolbarActionsRow
             }
         }
         .padding(.horizontal, Theme.Space.page)
@@ -274,12 +280,32 @@ struct AppUninstallerView: View {
 
     private var toolbarTabs: some View {
         HStack(spacing: 12) {
-            PillTabs(tabs: AppUninstallerViewModel.Mode.allCases, selection: $vm.mode, title: tabTitle)
-                .fixedSize()
-            if vm.mode != .orphaned {
-                SweepMenuPicker(label: "Sort by", options: AppUninstallerViewModel.SortOrder.allCases,
-                                selection: $vm.sortOrder, title: \.rawValue)
-                .help("Last used puts the apps you haven't opened for longest first")
+            pillTabs
+            sortPicker
+        }
+    }
+
+    private var pillTabs: some View {
+        PillTabs(tabs: AppUninstallerViewModel.Mode.allCases, selection: $vm.mode, title: tabTitle)
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private var sortPicker: some View {
+        if vm.mode != .orphaned {
+            SweepMenuPicker(label: "Sort by", options: AppUninstallerViewModel.SortOrder.allCases,
+                            selection: $vm.sortOrder, title: \.rawValue)
+            .help("Last used puts the apps you haven't opened for longest first")
+        }
+    }
+
+    /// The Leftovers actions on their own row, right-aligned, in the stacked toolbars.
+    @ViewBuilder
+    private var toolbarActionsRow: some View {
+        if vm.mode == .orphaned && !state.orphanedGroups.isEmpty {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                toolbarActions(spacing: 8)
             }
         }
     }
@@ -354,23 +380,26 @@ struct AppUninstallerView: View {
                         : "No installed app matches your search."
                 )
             } else {
-                HStack(alignment: .top, spacing: 20) {
-                    appList
-                        .frame(width: 340)
-                    if let app = selectedApp {
-                        AppFootprintDetail(
-                            app: app,
-                            selectedDataIDs: $vm.selectedDataIDs,
-                            isBusy: state.isCleaning,
-                            onClearRebuildable: { vm.appToClearCaches = app },
-                            onUninstall: { vm.appToUninstall = app },
-                            onAddToTray: {
-                                let dataPaths = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }.map(\.path)
-                                CleanupTray.shared.add([TrayItem.app(app, dataPaths: dataPaths)])
-                            }
-                        )
-                        .frame(minWidth: 460)
-                        .layoutPriority(1)
+                // List (340) beside the details (at least 460). A page narrower than that (the
+                // cleanup tray open, or a small window) overflowed both edges; there the details
+                // go under the list and the two share the height.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 20) {
+                        appList
+                            .frame(width: 340)
+                        if let app = selectedApp {
+                            appDetail(app)
+                                .frame(minWidth: 460, idealWidth: 460, maxWidth: .infinity)
+                                .layoutPriority(1)
+                        }
+                    }
+                    VStack(spacing: 16) {
+                        appList
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if let app = selectedApp {
+                            appDetail(app)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
                 }
                 .padding(.horizontal, Theme.Space.page)
@@ -393,6 +422,20 @@ struct AppUninstallerView: View {
                 }
             }
         }
+    }
+
+    private func appDetail(_ app: InstalledAppItem) -> some View {
+        AppFootprintDetail(
+            app: app,
+            selectedDataIDs: $vm.selectedDataIDs,
+            isBusy: state.isCleaning,
+            onClearRebuildable: { vm.appToClearCaches = app },
+            onUninstall: { vm.appToUninstall = app },
+            onAddToTray: {
+                let dataPaths = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }.map(\.path)
+                CleanupTray.shared.add([TrayItem.app(app, dataPaths: dataPaths)])
+            }
+        )
     }
 
     private var appList: some View {

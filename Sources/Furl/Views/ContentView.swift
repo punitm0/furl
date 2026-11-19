@@ -61,7 +61,11 @@ struct ContentView: View {
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .identity))
                 // minWidth 0: a screen's content (a number growing a digit while scanning) must never
                 // widen the detail column, or NavigationSplitView takes the space from the sidebar.
-                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                // minHeight 0: likewise for height. Each column keeps its own minimum size, and wrapping
+                // text measured at a tiny width (an empty state's message) reports a minimum taller than
+                // the window; the split view then overflows and is centred, pushing the sidebar's top
+                // rows and the screen header out of sight.
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             }
             .animation(.easeOut(duration: 0.18), value: state.selectedSection)
             .background(Theme.ground)
@@ -76,6 +80,7 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.2), value: state.statusBanner)
             .animation(.easeInOut(duration: 0.2), value: state.cleanupProgress == nil)
             .animation(.easeInOut(duration: 0.2), value: state.errorBanner)
+            .cleanupTrayColumn(state: state)
             .inspector(isPresented: inspectorPresented) {
                 if let item = inspector.current {
                     InspectorPanel(state: state, store: inspector, item: item)
@@ -84,7 +89,7 @@ struct ContentView: View {
             }
             .hidingToolbarTitle()
             .toolbarBackground(Theme.ground, for: .windowToolbar)
-            .cleanupTrayInspector(state: state)
+            .cleanupTrayToolbar()
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {

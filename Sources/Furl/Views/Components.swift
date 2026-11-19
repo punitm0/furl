@@ -459,30 +459,131 @@ struct ScreenHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Theme.pageTitle)
-                    .tracking(-0.3)
-                    .foregroundStyle(Theme.ink)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(Theme.pageSubtitle)
-                        .foregroundStyle(Theme.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(subtitle)
-                }
+        ScreenHeaderLayout {
+            // One line, always: a narrow page (cleanup tray open) used to wrap "Caches & Junk"
+            // one word per line. The controls move under the title first; past that it truncates.
+            Text(title)
+                .font(Theme.pageTitle)
+                .tracking(-0.3)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutValue(key: ScreenHeaderRole.self, value: .title)
+            if let subtitle {
+                Text(subtitle)
+                    .font(Theme.pageSubtitle)
+                    .foregroundStyle(Theme.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(subtitle)
+                    .layoutValue(key: ScreenHeaderRole.self, value: .subtitle)
             }
-            .layoutPriority(1)
-            Spacer(minLength: 12)
-            trailing()
+            HStack(spacing: 12) {
+                trailing()
+            }
+            .layoutValue(key: ScreenHeaderRole.self, value: .trailing)
         }
         .controlSize(.regular)
         .padding(.horizontal, Theme.Space.page)
+        .padding(.vertical, 10)
         .frame(minHeight: 64)
         .background(Theme.ground)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.border).frame(height: 1) }
+        // The cleanup tray carries this strip and its hairline on over its column.
+        .anchorPreference(key: ScreenHeaderBoundsKey.self, value: .bounds) { $0 }
+    }
+}
+
+private enum ScreenHeaderRole: LayoutValueKey {
+    enum Role { case title, subtitle, trailing }
+    static let defaultValue: Role = .title
+}
+
+/// Title (with its subtitle under it) and controls on one row while the whole title and the
+/// controls at their narrowest fit; on a narrower page (cleanup tray open) the controls drop to a
+/// second row, leading-aligned, and only then does the title truncate.
+private struct ScreenHeaderLayout: Layout {
+    var gap: CGFloat = 12
+    var rowSpacing: CGFloat = 8
+    static let subtitleSpacing: CGFloat = 2
+
+    private struct Plan {
+        var stacked = false
+        var title: CGSize = .zero
+        var subtitle: CGSize = .zero
+        var trailing: CGSize = .zero
+        var hasSubtitle = false
+        var leftHeight: CGFloat { title.height + (hasSubtitle ? ScreenHeaderLayout.subtitleSpacing + subtitle.height : 0) }
+        var leftWidth: CGFloat { max(title.width, subtitle.width) }
+    }
+
+    private func find(_ role: ScreenHeaderRole.Role, _ subviews: Subviews) -> LayoutSubview? {
+        subviews.first { $0[ScreenHeaderRole.self] == role }
+    }
+
+    private func plan(_ width: CGFloat?, _ subviews: Subviews) -> Plan {
+        var p = Plan()
+        guard let title = find(.title, subviews) else { return p }
+        let subtitle = find(.subtitle, subviews)
+        let trailing = find(.trailing, subviews)
+        p.hasSubtitle = subtitle != nil
+        let titleIdeal = title.sizeThatFits(.unspecified)
+        let trailingIdeal = trailing?.sizeThatFits(.unspecified) ?? .zero
+        let trailingMin = trailing?.sizeThatFits(ProposedViewSize(width: 0, height: nil)) ?? .zero
+
+        let leftWidth: CGFloat
+        guard let width else {
+            p.title = titleIdeal
+            p.subtitle = subtitle?.sizeThatFits(.unspecified) ?? .zero
+            p.trailing = trailingIdeal
+            return p
+        }
+        if trailingIdeal.width == 0 {
+            leftWidth = width
+        } else if titleIdeal.width + gap + trailingMin.width <= width {
+            let trailingWidth = min(trailingIdeal.width, max(trailingMin.width, width - titleIdeal.width - gap))
+            p.trailing = trailing?.sizeThatFits(ProposedViewSize(width: trailingWidth, height: nil)) ?? .zero
+            leftWidth = max(0, width - p.trailing.width - gap)
+        } else {
+            p.stacked = true
+            p.trailing = trailing?.sizeThatFits(ProposedViewSize(width: width, height: nil)) ?? .zero
+            leftWidth = width
+        }
+        let titleSize = title.sizeThatFits(ProposedViewSize(width: min(titleIdeal.width, leftWidth), height: nil))
+        p.title = CGSize(width: min(titleSize.width, leftWidth), height: titleSize.height)
+        if let subtitle {
+            let size = subtitle.sizeThatFits(ProposedViewSize(width: leftWidth, height: nil))
+            p.subtitle = CGSize(width: min(size.width, leftWidth), height: size.height)
+        }
+        return p
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let p = plan(proposal.width, subviews)
+        if p.stacked {
+            return CGSize(width: proposal.width ?? max(p.leftWidth, p.trailing.width),
+                          height: p.leftHeight + rowSpacing + p.trailing.height)
+        }
+        let natural = p.leftWidth + (p.trailing.width > 0 ? gap + p.trailing.width : 0)
+        return CGSize(width: proposal.width ?? natural, height: max(p.leftHeight, p.trailing.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let p = plan(bounds.width, subviews)
+        let total = p.stacked ? p.leftHeight + rowSpacing + p.trailing.height : p.leftHeight
+        let top = p.stacked ? bounds.midY - total / 2 : bounds.midY - p.leftHeight / 2
+        find(.title, subviews)?.place(at: CGPoint(x: bounds.minX, y: top), anchor: .topLeading,
+                                      proposal: ProposedViewSize(p.title))
+        find(.subtitle, subviews)?.place(at: CGPoint(x: bounds.minX, y: top + p.title.height + Self.subtitleSpacing),
+                                         anchor: .topLeading, proposal: ProposedViewSize(p.subtitle))
+        guard let trailing = find(.trailing, subviews) else { return }
+        if p.stacked {
+            trailing.place(at: CGPoint(x: bounds.minX, y: top + p.leftHeight + rowSpacing), anchor: .topLeading,
+                           proposal: ProposedViewSize(width: bounds.width, height: nil))
+        } else {
+            trailing.place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+                           proposal: ProposedViewSize(width: p.trailing.width, height: nil))
+        }
     }
 }
 
