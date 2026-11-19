@@ -17,7 +17,7 @@ export const site = {
    * "redirect_url" (this site's /?paid=1). Set the product's Minimum Price to $1 or less: Dodo ignores
    * a paymentAmount below the minimum.
    */
-  checkoutUrl: "", // Dodo product pdt_0NsELiRCJ3tL7BN41EZgN; fill in once its live checkout opens
+  checkoutUrl: "https://checkout.dodopayments.com/buy/pdt_0NsELiRCJ3tL7BN41EZgN", // Dodo product "Furl" (live)
   /**
    * The public repository.
    * Drives every GitHub link: header, footer, Report a problem, /privacy "Read the source", and the

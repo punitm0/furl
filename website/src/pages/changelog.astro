@@ -19,7 +19,7 @@ const items = (r: (typeof releases)[number], key: "new" | "improved" | "fixed"):
 ---
 <Base
   title="Changelog · Furl"
-  description="What's new in Furl. Every version, newest first. Furl doesn't update itself yet: use Check for Updates in the app, or follow releases on GitHub."
+  description="What's new in Furl. Every version, newest first. Furl checks for updates once a day and installs them when you click. You can also follow releases on GitHub."
 >
   <Header />
   <main id="main" class="doc-page changelog-page">
@@ -27,7 +27,7 @@ const items = (r: (typeof releases)[number], key: "new" | "improved" | "fixed"):
       <div class="doc-hero">
         <span class="doc-eyebrow">CHANGELOG</span>
         <h1>What's new in Furl</h1>
-        <p><span class="only-desktop">Every version, newest first. Furl doesn't update itself yet: use Check for Updates in the app, or follow releases on GitHub.</span><span class="only-mobile">Every version, newest first. Use Check for Updates in the app, or follow releases on GitHub.</span></p>
+        <p><span class="only-desktop">Every version, newest first. Furl checks for updates once a day and installs them when you click. You can also follow releases on GitHub.</span><span class="only-mobile">Every version, newest first. Use Check for Updates in the app, or follow releases on GitHub.</span></p>
       </div>
       <a href={releasesUrl} class="btn-outline only-desktop-flex"><Fragment set:html={githubIcon} />Watch releases</a>
     </div>

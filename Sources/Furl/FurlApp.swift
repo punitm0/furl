@@ -24,6 +24,9 @@ enum AppServices {
         notifications.onOpenHistory = {
             AppWindows.showMain(section: .activity, state: state)
         }
+        notifications.onUpdateAvailable = {
+            AppWindows.showAbout(state: state)
+        }
         notifications.onCleanNow = {
             Task { await confirmAndCleanFromNotification() }
         }
@@ -32,8 +35,14 @@ enum AppServices {
         ProcessesIntegration.connect(to: autoSweep)
         ActivityLog.shared.connect(compress: compress)
         StatsLedger.shared.connect(compress: compress)
+        #if DEBUG
+        // Update-test copies must not add a fake install to the public counter.
+        if !UpdateTestMode.isActive { CommunityStatsReporter.shared.start() }
+        #else
         CommunityStatsReporter.shared.start()
+        #endif
         SupportStore.shared.refreshCheckoutLink()
+        UpdateChecker.shared.startAutomaticChecks()
         CleanupTray.shared.pruneMissing(state: state)
         InspectorStore.shared.connect(to: state)
         ErrorLog.shared.connect(to: state)
@@ -86,6 +95,18 @@ enum AppWindows {
 
     static func registerOpenWindow(_ action: @escaping () -> Void) {
         openMainWindow = action
+    }
+
+    private static var openAboutWindow: (() -> Void)?
+
+    static func registerOpenAbout(_ action: @escaping () -> Void) {
+        openAboutWindow = action
+    }
+
+    /// About, from outside a view (the update notification). Falls back to the main window.
+    static func showAbout(state: AppState) {
+        activateForWindow()
+        if let openAboutWindow { openAboutWindow() } else { showMain(section: nil, state: state) }
     }
 
     /// While running menu-bar-only the app has no Dock icon; give it one back before showing a window.
@@ -178,6 +199,7 @@ struct FurlApp: App {
     var body: some Scene {
         Window("Furl", id: "main") {
             ContentView(state: state)
+                .registersAboutOpener()
                 .frame(minWidth: 980, minHeight: 640)
                 .followsFurlPalette()
         }
@@ -282,16 +304,25 @@ struct FurlApp: App {
 }
 
 /// App menu › About Furl opens our own About window; Check for Updates… opens it and starts the check.
+/// Once a check has found a newer version the item reads "Update Available…" and opens About on it.
 struct AboutCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
             Button("About Furl") {
                 openWindow(id: "about")
             }
-            Button("Check for Updates…") {
-                UpdateChecker.openAboutAndCheck(openWindow: openWindow)
+            if updates.availableUpdate != nil {
+                Button("Update Available…") {
+                    AppWindows.activateForWindow()
+                    openWindow(id: "about")
+                }
+            } else {
+                Button("Check for Updates…") {
+                    UpdateChecker.openAboutAndCheck(openWindow: openWindow)
+                }
             }
         }
 
@@ -323,4 +354,17 @@ private struct AboutWindowContent: View {
             ReportProblemStore.shared.present()
         })
     }
+}
+
+/// Hands `openWindow(id: "about")` to `AppWindows`, so the update notification can open About.
+private struct AboutOpenerRegistration: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear { AppWindows.registerOpenAbout { openWindow(id: "about") } }
+    }
+}
+
+extension View {
+    func registersAboutOpener() -> some View { modifier(AboutOpenerRegistration()) }
 }

@@ -28,11 +28,21 @@ export type Release = {
 
 export const releases: Release[] = [
   {
+    version: "1.2.0",
+    date: "19 November 2026",
+    title: "Automatic updates",
+    lead: "Furl now keeps itself up to date, and you can pay what you like for it.",
+    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
+    new: [
+      { lead: "Automatic updates", text: "Furl checks for a new version once a day and can install it and relaunch. Each update is checked against Furl's signature before anything is replaced. You can turn the check off in Settings." },
+      { lead: "Pay what you like", text: "Support Furl with any amount you choose. Furl stays free, with every feature." },
+    ],
+  },
+  {
     version: "1.0.1",
     date: "19 November 2026",
     title: "Fixes",
     lead: "The cleanup tray fits any window, and fixes for the sidebar, Smart Review and stopped scans.",
-    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
     improved: [
       { lead: "Cleanup tray", text: "Sits beside the page as a card, and on a small window takes over the page until you close it or pick another screen." },
       { lead: "Auto-Sweep", text: "With Auto-Sweep off, its rules fade out and the card says to turn it on, so it's clear nothing runs." },

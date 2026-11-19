@@ -43,6 +43,7 @@ struct MenuBarLabel: View {
             // The label lives as long as the status item, so it's a reliable place to grab openWindow
             // for notification actions that need to bring the main window back.
             AppWindows.registerOpenWindow { openWindow(id: "main") }
+            AppWindows.registerOpenAbout { openWindow(id: "about") }
         }
     }
 }

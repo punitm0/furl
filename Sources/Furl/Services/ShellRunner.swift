@@ -96,6 +96,24 @@ enum ShellRunner {
         )
     }
 
+    /// Starts a program and returns without waiting; it keeps running after Furl quits (used only to
+    /// reopen Furl after an update). Arguments go in as an array, never through a shell string.
+    @discardableResult
+    static func launchDetached(_ executable: String, arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Resolves a binary by checking well-known install locations first, then `which`.
     static func which(_ binary: String) -> String? {
         let fm = FileManager.default

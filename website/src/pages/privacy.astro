@@ -33,7 +33,8 @@ const summary = [
 ];
 
 const network = [
-  { feature: "Check for Updates", to: "GitHub", when: "When you click it.", sends: "Nothing about you." },
+  { feature: "Check for Updates", to: "GitHub", when: "When you click it, and about once a day unless you turn it off in Settings.", sends: "Nothing about you." },
+  { feature: "Install update", to: "GitHub", when: "When you click Install and Relaunch.", sends: "Nothing. It downloads the new version from the release page." },
   {
     feature: "Public counter",
     to: "Furl's stats server",
@@ -87,7 +88,7 @@ const toc = [
 
       <section id="network" class="doc-section" aria-labelledby="network-title">
         <h2 id="network-title">What Furl sends</h2>
-        <p>Only the counter and the checkout-link check run on their own. No tracking, ads or crash reports.</p>
+        <p>Only the counter, the checkout-link check and the daily update check run on their own. No tracking, ads or crash reports.</p>
         <div class="network-table-wrap only-desktop">
           <table class="network-table">
             <thead>

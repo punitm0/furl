@@ -18,6 +18,7 @@ struct SettingsView: View {
     @ObservedObject var autoSweep: AutoSweepStore
     @AppStorage(SettingsTab.storageKey) private var selectedTab: SettingsTab = .general
     @Environment(\.openWindow) private var openWindow
+    @AppStorage(UpdateChecker.Keys.automaticChecks) private var automaticUpdateChecks = true
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -118,10 +119,13 @@ struct SettingsView: View {
                     ReportProblemStore.shared.present()
                 }
                 helpRow(title: AboutVersion.label,
-                        detail: "Checks GitHub only when you click.",
+                        detail: automaticUpdateChecks
+                            ? "Checks GitHub once a day. Nothing is downloaded until you click Install."
+                            : "Checks GitHub only when you click.",
                         button: "Check for Updates…") {
                     UpdateChecker.openAboutAndCheck(openWindow: openWindow)
                 }
+                Toggle("Check for updates automatically", isOn: $automaticUpdateChecks)
             }
         }
         .formStyle(.grouped)

@@ -5,12 +5,17 @@
 #
 # Usage: ./scripts/make_dmg.sh            (builds the app first if build/Furl.app is missing)
 # Needs Finder automation permission the first time (macOS will ask) to lay out the window.
+#
+# Also writes build/Furl.dmg.sha256 and, when the update signing key exists (see
+# scripts/sign_update.swift), build/Furl.dmg.sig. Upload all three to the GitHub release: the app's
+# Install and Relaunch needs the .sha256 and .sig assets, and falls back to Download without them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/build/Furl.app"
-DMG="$ROOT/build/Furl.dmg"
-VOL="Furl"
+# FURL_APP / FURL_DMG / FURL_DMG_VOLNAME point elsewhere (used by the update end-to-end test in docs/releasing.md).
+APP="${FURL_APP:-$ROOT/build/Furl.app}"
+DMG="${FURL_DMG:-$ROOT/build/Furl.dmg}"
+VOL="${FURL_DMG_VOLNAME:-Furl}"
 BG_1X="$ROOT/Resources/dmg/dmg-background.png"
 BG_2X="$ROOT/Resources/dmg/dmg-background@2x.png"
 
@@ -63,3 +68,16 @@ hdiutil detach "/Volumes/$VOL" -quiet
 rm -f "$DMG"
 hdiutil convert -quiet "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG"
 echo "Built: $DMG ($(du -h "$DMG" | cut -f1))"
+
+# Checksum and signature assets for Install and Relaunch.
+(cd "$(dirname "$DMG")" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+echo "Wrote: $DMG.sha256"
+rm -f "$DMG.sig"
+KEY="${FURL_UPDATE_KEY:-$HOME/.furl/update-signing-key}"
+if [[ -f "$KEY" ]]; then
+  swift "$ROOT/scripts/sign_update.swift" sign "$DMG" > "$DMG.sig"
+  echo "Wrote: $DMG.sig"
+else
+  echo "Warning: no update signing key at $KEY, so no Furl.dmg.sig." >&2
+  echo "         Without it, apps can't install this release by themselves (they show Download instead)." >&2
+fi

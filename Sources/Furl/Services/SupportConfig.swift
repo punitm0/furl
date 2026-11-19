@@ -9,7 +9,7 @@ enum SupportConfig {
     /// Normally the link comes from the stats Worker (`DODO_CHECKOUT_URL` var, GET /v1/support), so shipped
     /// builds pick it up without an update; this constant is used only until that has answered once.
     /// No API key: links need none, and secrets never ship in the app.
-    static let checkoutBaseURL = "" // Empty: no pay link until the Worker serves one (/v1/support)
+    static let checkoutBaseURL = "https://checkout.dodopayments.com/buy/pdt_0NsELiRCJ3tL7BN41EZgN"
 
     /// GET /v1/support on the stats Worker: `{"checkoutUrl": "https://checkout.dodopayments.com/buy/pdt_…" | null}`.
     /// Same host as the stats endpoint.

@@ -9,6 +9,7 @@ Thanks for helping. Furl is maintained by one person, so small, focused pull req
 - Scan-engine changes: run `swift run -c release ScanBench new` before and after (see `docs/scan-benchmarks.md`).
 - `stats-worker/`: `npm ci && npm run typecheck && npm test`.
 - `website/`: `npm ci && npm run build && npm run check`.
+- Releases and testing self-update locally: `docs/releasing.md`.
 
 ## Guidelines
 

@@ -2,7 +2,8 @@ import AppKit
 import Foundation
 @preconcurrency import UserNotifications
 
-/// Local notifications only (UNUserNotificationCenter): low-disk alerts and Auto-Sweep summaries.
+/// Local notifications only (UNUserNotificationCenter): low-disk alerts, Auto-Sweep summaries and the
+/// one-per-version update notice.
 /// Nothing is sent anywhere; notifications are scheduled on this Mac.
 @MainActor
 final class NotificationService: NSObject, ObservableObject {
@@ -11,6 +12,7 @@ final class NotificationService: NSObject, ObservableObject {
     enum Category {
         static let lowDisk = "SWEEPMAC_LOW_DISK"
         static let summary = "SWEEPMAC_AUTOSWEEP_SUMMARY"
+        static let updateAvailable = "FURL_UPDATE_AVAILABLE"
     }
 
     enum Action {
@@ -26,6 +28,7 @@ final class NotificationService: NSObject, ObservableObject {
     var onCleanNow: (@MainActor () -> Void)?
     var onReview: (@MainActor () -> Void)?
     var onOpenHistory: (@MainActor () -> Void)?
+    var onUpdateAvailable: (@MainActor () -> Void)?
 
     /// UNUserNotificationCenter throws an exception when the process isn't inside an .app bundle
     /// (e.g. `swift run`), so every call is guarded by this.
@@ -123,6 +126,25 @@ final class NotificationService: NSObject, ObservableObject {
         await post(content, id: "test-\(UUID().uuidString)")
     }
 
+    /// UpdateCheck board, "the one notice": only when notifications are already allowed. It never asks
+    /// for permission; with notifications off there is no other hint.
+    func postUpdateAvailable(version: String) async {
+        guard let center else { return }
+        await refreshAuthorization()
+        guard authorization == .authorized || authorization == .provisional else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Furl \(version) is available"
+        content.body = "Click to see what's new and install it. Your settings and history stay."
+        content.categoryIdentifier = Category.updateAvailable
+        let request = UNNotificationRequest(identifier: "update-\(version)", content: content, trigger: nil)
+        do {
+            try await center.add(request)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     private func post(_ content: UNMutableNotificationContent, id: String) async {
         guard let center else { return }
         guard await requestPermissionIfNeeded() else { return }
@@ -157,7 +179,11 @@ extension NotificationService: UNUserNotificationCenterDelegate {
             case Action.viewHistory: self.onOpenHistory?()
             default:
                 // Clicking the notification body.
-                if category == Category.summary { self.onOpenHistory?() } else { self.onReview?() }
+                switch category {
+                case Category.summary: self.onOpenHistory?()
+                case Category.updateAvailable: self.onUpdateAvailable?()
+                default: self.onReview?()
+                }
             }
         }
     }

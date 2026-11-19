@@ -87,6 +87,8 @@ swift run Furl
 
 To make a DMG, run `./scripts/make_dmg.sh` after `build_app.sh`. It asks for permission to control Finder so it can lay out the window. Builds are ad-hoc signed, not notarized, so macOS shows the "Open Anyway" step on first launch.
 
+`make_dmg.sh` also writes `build/Furl.dmg.sha256` and `build/Furl.dmg.sig`, which Furl's self-update needs. See [docs/releasing.md](docs/releasing.md) for the signing key and the release checklist.
+
 ## Repository layout
 
 - `Sources/Furl`: the app.

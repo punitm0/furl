@@ -37,7 +37,8 @@ struct AboutView: View {
                     .textSelection(.enabled)
             }
 
-            // UpdateCheck board: the slot under the version line. Nothing is fetched until the user clicks.
+            // UpdateCheck board: the slot under the version line. Shows a release found by the daily
+            // background check, or checks when the user clicks.
             UpdateSlot(checker: updates)
 
             HStack(alignment: .top, spacing: 6) {
@@ -81,7 +82,7 @@ struct AboutView: View {
         .padding(.top, 8)
         .padding(.bottom, 28)
         .frame(width: 340)
-        // The result stays until About closes; next time the slot is idle again.
+        // The result stays until About closes; next time the slot is idle again (a found update stays).
         .onDisappear { updates.reset() }
     }
 
@@ -118,7 +119,7 @@ struct AboutView: View {
 }
 
 /// The update slot in About (UpdateCheck board): idle, checking, up to date, a newer version,
-/// offline, and GitHub refused.
+/// offline, GitHub refused, installing and install failed.
 private struct UpdateSlot: View {
     @ObservedObject var checker: UpdateChecker
 
@@ -127,7 +128,11 @@ private struct UpdateSlot: View {
     var body: some View {
         switch checker.status {
         case .idle:
-            checkButton("Check for Updates")
+            if let update = checker.availableUpdate {
+                availableCard(update)
+            } else {
+                checkButton("Check for Updates")
+            }
         case .checking:
             HStack(spacing: 8) {
                 UpdateSpinner()
@@ -158,8 +163,29 @@ private struct UpdateSlot: View {
                 .foregroundStyle(Theme.inkSecondary)
             }
             .frame(minHeight: 26)
-        case .available(let version, let releaseURL):
-            availableCard(version: version, releaseURL: releaseURL)
+        case .available(let update):
+            availableCard(update)
+        case .installing(let phase):
+            HStack(spacing: 8) {
+                UpdateSpinner()
+                Text(installingText(phase))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.inkSecondary)
+            }
+            .frame(height: 26)
+        case .installFailed(let message, let update):
+            VStack(spacing: 8) {
+                problemLine(message, systemImage: "exclamationmark.triangle")
+                HStack(spacing: 10) {
+                    downloadButton(update.releaseURL, primary: false)
+                    if checker.installProblem(for: update) == nil {
+                        Button("Try Again") { checker.install(update) }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.sweep)
+                    }
+                }
+            }
         case .offline:
             VStack(spacing: 8) {
                 problemLine("Couldn't reach GitHub. Check your connection.", systemImage: "wifi.slash")
@@ -199,40 +225,73 @@ private struct UpdateSlot: View {
         }
     }
 
+    private func installingText(_ phase: UpdateInstaller.Phase) -> String {
+        switch phase {
+        case .downloading: return "Downloading the new version…"
+        case .verifying: return "Checking the download…"
+        case .installing: return "Installing. Furl reopens in a moment…"
+        }
+    }
+
+    /// Download: opens the release page (html_url) in the browser.
+    private func downloadButton(_ releaseURL: URL, primary: Bool) -> some View {
+        Button { NSWorkspace.shared.open(releaseURL) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .bold))
+                Text("Download")
+            }
+        }
+        .buttonStyle(SweepButtonStyle(kind: primary ? .primary : .secondary, height: 28))
+        .help(releaseURL.absoluteString)
+    }
+
     /// Card: mintTint, radius 10, padding 12 × 14. Title sweepDeep 13 semibold; body 12 inkTertiary;
-    /// Download is primary 28.
-    private func availableCard(version: String, releaseURL: URL) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    /// the main button is primary 28. Install and Relaunch when this copy can replace itself, else
+    /// Download (the release page) with the reason underneath.
+    private func availableCard(_ update: UpdateChecker.AvailableUpdate) -> some View {
+        let problem = checker.installProblem(for: update)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.to.line")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.sweepDeep)
-                Text("Version \(version) is available")
+                Text("Version \(update.version) is available")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.sweepDeep)
             }
-            Text("You have \(current). Download the new version and drag it into Applications to replace this one. Your settings and history stay.")
+            Text(problem == nil
+                 ? "You have \(current). Furl downloads it from GitHub, checks it, replaces this copy and reopens. Your settings and history stay."
+                 : "You have \(current). Download the new version and drag it into Applications to replace this one. Your settings and history stay.")
                 .font(.system(size: 12))
                 .lineSpacing(2)
                 .foregroundStyle(Theme.inkTertiary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                // Opens the release page (html_url) in the browser.
-                Button { NSWorkspace.shared.open(releaseURL) } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 11, weight: .bold))
-                        Text("Download")
+                if problem == nil {
+                    Button { checker.install(update) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("Install and Relaunch")
+                        }
                     }
+                    .buttonStyle(SweepButtonStyle(kind: .primary, height: 28))
+                } else {
+                    downloadButton(update.releaseURL, primary: true)
                 }
-                .buttonStyle(SweepButtonStyle(kind: .primary, height: 28))
-                .help(releaseURL.absoluteString)
 
-                Button("What's New") { NSWorkspace.shared.open(SupportConfig.changelogURL(version: version)) }
+                Button("What's New") { NSWorkspace.shared.open(SupportConfig.changelogURL(version: update.version)) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.sweep)
+            }
+            if let problem {
+                Text(problem)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.top, 12)
