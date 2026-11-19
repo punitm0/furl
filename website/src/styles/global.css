@@ -621,8 +621,6 @@ button.summary-cta:focus-visible, .tile:focus-visible { outline: 2px solid var(-
   border-radius: 14px;
   padding: 16px;
 }
-.privacy-more { color: var(--mint); font-weight: 600; text-decoration: none; white-space: nowrap; }
-.privacy-more:hover { color: var(--graphite-text); text-decoration: underline; }
 
 /* ---------- Footer ---------- */
 .site-footer { border-top: 1px solid var(--line); }
