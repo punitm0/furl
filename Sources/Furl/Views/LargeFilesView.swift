@@ -38,6 +38,12 @@ struct LargeFilesView: View {
         selectedFiles.reduce(0) { $0 + $1.sizeBytes }
     }
 
+    /// Ticked files the type or search filter hides; Remove still removes them.
+    private var hiddenSelectedCount: Int {
+        let shown = Set(filteredFiles.map(\.id))
+        return selectedFiles.filter { !shown.contains($0.id) }.count
+    }
+
     private var thresholdLabel: String {
         FileSizeHelper.formatBytes(state.largeFileThresholdMB * 1_000_000)
     }
@@ -88,6 +94,7 @@ struct LargeFilesView: View {
                     actionTitle: state.deletionMode == .moveToTrash ? "Move to Trash" : "Delete",
                     actionKind: state.deletionMode == .permanent ? .danger : .primary,
                     isBusy: state.isCleaning,
+                    note: hiddenSelectionNote(hiddenSelectedCount),
                     onAddToTray: { CleanupTray.shared.add(selectedFiles.map(TrayItem.largeFile)) },
                     onSelectAll: { state.selectedLargeFileIDs.formUnion(filteredFiles.map(\.id)) },
                     onSelectNone: { state.selectedLargeFileIDs.removeAll() },
@@ -96,6 +103,8 @@ struct LargeFilesView: View {
             }
         }
         .navigationTitle("Large Files")
+        // A Disk row's Clean / Review / Pick files opens this section filtered to its folder.
+        .onAppear { if let filter = state.takeHandoffFilter(for: .largeFiles) { vm.searchText = filter } }
         .cleanSlateScreen()
         .confirmationDialog(
             "Remove \(selectedFiles.count) file\(selectedFiles.count == 1 ? "" : "s")?",
@@ -107,17 +116,25 @@ struct LargeFilesView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(state.deletionMode == .moveToTrash
-                 ? "Files will be moved to the Trash."
-                 : "Files will be permanently deleted and can't be recovered.")
+            Text(confirmMessage)
         }
+    }
+
+    private var confirmMessage: String {
+        var text = state.deletionMode == .moveToTrash
+            ? "Files will be moved to the Trash."
+            : "Files will be permanently deleted and can't be recovered."
+        if let hidden = hiddenSelectionNote(hiddenSelectedCount) {
+            text += "\n\n\(hidden), but \(hiddenSelectedCount == 1 ? "it's" : "they're") included."
+        }
+        return text
     }
 
     private var toolbarBar: some View {
         HStack(spacing: 12) {
             SweepMenuPicker(label: "Type", options: LargeFileKind.allCases, selection: $vm.selectedKind, title: \.rawValue)
 
-            SweepMenuPicker(label: "Min size", options: [Int64(50), 100, 250, 500, 1000, 5000],
+            SweepMenuPicker(label: "Bigger than", options: [Int64(50), 100, 250, 500, 1000, 5000],
                             selection: $state.largeFileThresholdMB,
                             title: { $0 >= 1000 ? "\($0 / 1000) GB" : "\($0) MB" })
             .help("Raising the size filters current results; lowering it rescans")
@@ -185,6 +202,8 @@ struct LargeFilesView: View {
         .onTapGesture(count: 2) {
             DeletionService.revealInFinder(file.path)
         }
-        .pathContextMenu(file.path)
+        .pathContextMenu(file.path, dontScan: state.neverScanFolder(forFile: file.path).map { folder in
+            { state.requestNeverScan(folder: folder, from: .largeFiles) }
+        })
     }
 }

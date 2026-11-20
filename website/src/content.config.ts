@@ -7,6 +7,8 @@ const guides = defineCollection({
   schema: z.object({
     title: z.string(),
     description: z.string(),
+    /** Shorter search-result description (~150 chars) when `description` runs long. Defaults to `description`. */
+    metaDescription: z.string().optional(),
     /** Path under public/, 1200×630. */
     cover: z.string(),
     /** Lower comes first on the guides page. */

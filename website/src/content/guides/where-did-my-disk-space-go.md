@@ -13,6 +13,8 @@ tldr:
 updated: 2026-11-18
 ---
 
+Most missing space hides in **System Data**: caches, logs, local snapshots, swap, Docker and AI models. In Terminal, `du -sh ~/* | sort -h` shows your biggest folders.
+
 Open **System Settings → General → Storage** and you get a coloured bar with a few broad labels: Applications, Documents, Developer, and a very large grey slice called **System Data**. It tells you that the disk is full, but not why.
 
 ## What the slices mean

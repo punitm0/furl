@@ -49,7 +49,7 @@ struct ProcessesView: View {
             }
             Button("Cancel", role: .cancel) { confirmStopIDs = nil }
         } message: {
-            Text("Furl asks each process to quit (SIGTERM). Anything that ignores it can be force quit afterwards. Unsaved state in those processes is lost.")
+            Text("Furl asks each one to quit. Anything that ignores it can be force quit afterwards. Unsaved state in those processes is lost.")
         }
         .confirmationDialog(
             confirmEndSession.map { "End \($0.agentName) in \($0.projectName)?" } ?? "",

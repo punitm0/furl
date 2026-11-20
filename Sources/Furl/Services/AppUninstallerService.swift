@@ -193,7 +193,9 @@ enum AppUninstallerService {
                 name: entry.name,
                 location: entry.location,
                 sizeBytes: size,
-                modifiedDate: FileSizeHelper.modifiedDate(at: entry.url)
+                modifiedDate: FileSizeHelper.modifiedDate(at: entry.url),
+                isStrongMatch: isSureLeftover(key: key, installedBundleIDs: installedBundleIDs,
+                                              installedAppNames: installedAppNames)
             ))
         }
         let orphaned = grouped.map { key, items in
@@ -408,6 +410,44 @@ enum AppUninstallerService {
             }
         }
         return false
+    }
+
+    /// Words that mark a folder as a helper or shared part rather than one app's own data.
+    private static let sharedPartWords: Set<String> = [
+        "helper", "helpers", "agent", "daemon", "shared", "common", "framework", "frameworks",
+        "plugin", "plugins", "extension", "extensions", "electron", "updater", "update", "sparkle",
+        "squirrel", "shipit", "crashpad", "crashreporter", "launcher", "service", "services",
+        "login", "loginitem", "group"
+    ]
+    /// Reverse-DNS parts that say nothing about which app a folder belongs to.
+    private static let domainWords: Set<String> = [
+        "com", "org", "net", "io", "us", "co", "uk", "de", "app", "dev", "ai", "me", "inc"
+    ]
+
+    /// A leftover group is a sure match only when its name is a full app ID (like
+    /// `com.bohemiancoding.sketch3` or `zoom.us`), it doesn't look like a helper or shared part, and
+    /// no installed app shares a maker, name part or name with it. Furl only sees apps in the
+    /// Applications folders and running ones, so CLI tools and apps on other drives can still use it;
+    /// that's why even sure matches only auto-tick folders the app rebuilds. Anything else is Furl's
+    /// best guess and is never ticked for the user.
+    static func isSureLeftover(key: String, installedBundleIDs: Set<String>,
+                               installedAppNames: Set<String> = []) -> Bool {
+        let parts = key.lowercased().split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty }) else { return false }
+        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard parts.allSatisfy({ $0.allSatisfy(allowed.contains) }) else { return false }
+        let words = parts.flatMap { $0.split(whereSeparator: { $0 == "-" || $0 == "_" }).map(String.init) }
+        guard !words.contains(where: sharedPartWords.contains) else { return false }
+        let nameParts = Set(parts.filter { !domainWords.contains($0) })
+        guard !nameParts.isEmpty else { return false }
+        for bundleID in installedBundleIDs {
+            let installedParts = bundleID.lowercased().split(separator: ".").map(String.init)
+            if installedParts.contains(where: nameParts.contains) { return false }
+        }
+        // An installed app named like a part of the ID ("Sketch" for com.vendor.sketch).
+        let squashedNames = Set(installedAppNames.map { $0.lowercased().filter { !$0.isWhitespace } })
+        if nameParts.contains(where: squashedNames.contains) { return false }
+        return true
     }
 
     private static func prettifyIdentifier(_ key: String) -> String {

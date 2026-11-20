@@ -38,6 +38,12 @@ struct JunkCleanupView: View {
         selectedItems.reduce(0) { $0 + $1.sizeBytes }
     }
 
+    /// Ticked items the category or search filter hides; Clean still removes them.
+    private var hiddenSelectedCount: Int {
+        let shown = Set(filteredItems.map(\.id))
+        return selectedItems.filter { !shown.contains($0.id) }.count
+    }
+
     private func categoryBytes(_ category: JunkCategory?) -> Int64 {
         state.junkItems
             .filter { category == nil || $0.category == category }
@@ -82,6 +88,12 @@ struct JunkCleanupView: View {
             ScreenHeader(title: "Caches & Junk", subtitle: headerSubtitle) {
                 HeaderSearchField(text: $vm.searchText, prompt: "Filter by name or path")
                 sortMenu
+                // SettingsMoved board: the rule sits where its effect shows; changing it re-filters, no rescan.
+                SweepMenuPicker(label: "Dependencies count as unused after", options: state.staleDaysOptions,
+                                selection: $state.staleDaysThreshold,
+                                title: { "\($0) days" })
+                    .fixedSize()
+                    .help("Small node_modules and .venv folders, and archives in Downloads, show once untouched this long")
                 Button("Select Safe") {
                     state.selectedJunkIDs = Set(filteredItems.filter { $0.risk == .safe }.map(\.id))
                 }
@@ -144,6 +156,8 @@ struct JunkCleanupView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 10) {
+                            // WhySafe board: the legend line sits at the top of the list.
+                            RiskLegend()
                             ForEach(presentCategories, id: \.self) { cat in
                                 let items = filteredItems.filter { $0.category == cat }
                                 if !items.isEmpty {
@@ -163,7 +177,7 @@ struct JunkCleanupView: View {
                     actionTitle: state.deletionMode == .moveToTrash ? "Clean" : "Delete",
                     actionKind: state.deletionMode == .permanent ? .danger : .primary,
                     isBusy: state.isCleaning,
-                    note: "Only Safe items are selected for you",
+                    note: hiddenSelectionNote(hiddenSelectedCount) ?? "Only Safe items are selected for you",
                     onAddToTray: { CleanupTray.shared.add(selectedItems.map(TrayItem.junk)) },
                     showsShortcutHint: false,
                     onSelectAll: { state.selectedJunkIDs.formUnion(filteredItems.map(\.id)) },
@@ -173,6 +187,8 @@ struct JunkCleanupView: View {
             }
         }
         .navigationTitle("Caches & Junk")
+        // A Disk row's Clean / Review / Pick files opens this section filtered to its folder.
+        .onAppear { if let filter = state.takeHandoffFilter(for: .junk) { vm.searchText = filter } }
         .cleanSlateScreen()
         .confirmationDialog(
             "Clean \(selectedItems.count) item\(selectedItems.count == 1 ? "" : "s")?",
@@ -198,7 +214,10 @@ struct JunkCleanupView: View {
         }
         let risky = selectedItems.filter { $0.risk != .safe }.count
         if risky > 0 {
-            text += "\n\n\(risky) selected item\(risky == 1 ? " is" : "s are") marked Moderate or Review — double-check \(risky == 1 ? "it" : "them") first."
+            text += "\n\n\(risky) selected item\(risky == 1 ? " is" : "s are") marked Check first. Double-check \(risky == 1 ? "it" : "them") first."
+        }
+        if let hidden = hiddenSelectionNote(hiddenSelectedCount) {
+            text += "\n\n\(hidden), but \(hiddenSelectedCount == 1 ? "it's" : "they're") included."
         }
         return text
     }
@@ -300,11 +319,6 @@ struct JunkCleanupView: View {
                             .font(Theme.body)
                             .foregroundStyle(Theme.ink)
                             .lineLimit(1)
-                        riskBadge(item.risk)
-                        if item.isPermanent {
-                            BadgeView(text: "Permanent", color: Theme.danger,
-                                      help: "Removed with its own tool (Docker or simctl). It can't go to the Trash or be undone.")
-                        }
                     }
                     HStack(spacing: 4) {
                         Text(item.reason)
@@ -323,6 +337,16 @@ struct JunkCleanupView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                HStack(spacing: 6) {
+                    RiskChip(tier: item.risk.tier)
+                    if item.isPermanent {
+                        RiskChip(tier: .permanent,
+                                 help: "Removed with its own tool (Docker or Xcode). It can't go to the Trash or be undone.")
+                    }
+                    WhyButton(explanation: WhySafe.junk(item, deletionMode: state.deletionMode),
+                              action: skipAction(for: item))
+                }
+
                 MeterBar(fraction: fraction, color: barColor)
                     .frame(width: 160)
 
@@ -337,7 +361,8 @@ struct JunkCleanupView: View {
         .onTapGesture(count: 2) {
             DeletionService.revealInFinder(item.path)
         }
-        .pathContextMenu(item.path, allowOpen: false)
+        .pathContextMenu(item.path, allowOpen: false,
+                         dontScan: item.command == nil ? { state.requestNeverScan(forJunk: item) } : nil)
     }
 
     /// JunkStates: 28pt icon-only chip (arrow.up.arrow.down + chevron), surface fill, control border.
@@ -374,20 +399,12 @@ struct JunkCleanupView: View {
         .accessibilityLabel("Sort: \(vm.sortOrder.rawValue)")
     }
 
-    private func riskBadge(_ risk: RiskLevel) -> some View {
-        let color: Color
-        let help: String
-        switch risk {
-        case .safe:
-            color = Theme.safe
-            help = "Regenerated automatically; safe to remove"
-        case .moderate:
-            color = Theme.warning
-            help = "Reinstallable, but you'll need to re-download or rebuild"
-        case .review:
-            color = Theme.danger
-            help = "May contain something you want to keep — review before removing"
+    /// "Always skip …": adds the folder to Settings › Scanning › Never scan, with Undo on the toast.
+    /// Tool-removed items (Docker, simulators) have no folder to skip.
+    private func skipAction(for item: JunkItem) -> WhyAction? {
+        guard item.command == nil, state.canNeverScan(item.path) else { return nil }
+        return WhyAction(title: "Always skip \(item.name)") {
+            state.neverScan(item.path, from: .junk)
         }
-        return BadgeView(text: risk.rawValue, color: color, help: help)
     }
 }

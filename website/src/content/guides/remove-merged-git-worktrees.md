@@ -1,6 +1,7 @@
 ---
 title: "Remove merged git worktrees safely"
 description: "Agents and parallel branches leave worktrees behind, each with its own build output and dependencies. How to find the merged ones and remove them without losing work."
+metaDescription: "Agents and parallel branches leave git worktrees behind, each with its own build output and dependencies. How to find the merged ones and remove them safely."
 cover: /guides/worktrees.svg
 order: 11
 audience: developers
@@ -11,6 +12,8 @@ tldr:
   - "`git worktree remove` refuses when there are uncommitted changes, which makes it the safe way to delete one."
 updated: 2026-11-18
 ---
+
+A git worktree is safe to remove once its branch is merged and it has no uncommitted changes. Check with `git branch --merged main`, or an empty `git diff main...<branch>` for squash merges, then delete it with `git worktree remove`.
 
 Git worktrees let you check out several branches at once, each in its own folder. Coding agents use them heavily. Each worktree is a full checkout, and once you've built in it, it often has its own `node_modules` or build folder too, so a handful of old ones can easily reach several gigabytes.
 

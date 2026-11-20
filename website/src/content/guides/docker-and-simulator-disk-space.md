@@ -1,6 +1,7 @@
 ---
 title: "Free up Docker and iOS Simulator disk space"
 description: "Docker images, volumes and build cache, plus old Xcode simulators and runtimes, can take 50 GB or more. The commands to see and clear them, and what can't be undone."
+metaDescription: "Docker images, volumes and build cache, plus old Xcode simulators and runtimes, can take 50 GB or more. How to see and clear them, and what can't be undone."
 cover: /guides/docker-sim.svg
 order: 8
 audience: developers
@@ -11,6 +12,8 @@ tldr:
   - "Deleting unavailable simulators and old runtimes frees gigabytes. All of it is permanent."
 updated: 2026-11-18
 ---
+
+Run `docker system df` to see what Docker holds, then prune build cache, dangling images and stopped containers. For Xcode, `xcrun simctl delete unavailable` removes simulators you can no longer use.
 
 Two of the biggest space users on a developer's Mac don't show up as normal folders. Docker keeps everything inside one large virtual disk, and Xcode keeps simulators and their runtimes in places Finder doesn't show. Both are cleaned with their own tools, and both are **permanent**: nothing goes to the Trash.
 

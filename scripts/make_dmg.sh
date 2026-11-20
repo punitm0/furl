@@ -38,6 +38,12 @@ hdiutil detach "/Volumes/$VOL" -quiet 2>/dev/null || true
 hdiutil create -quiet -srcfolder "$STAGE" -volname "$VOL" -fs HFS+ -format UDRW -size "${SIZE_MB}m" "$RW"
 hdiutil attach -quiet -readwrite -noverify -noautoopen "$RW"
 
+# Finder can lag behind the mount; styling fails with -1728 until it sees the disk.
+for _ in $(seq 1 20); do
+  osascript -e "tell application \"Finder\" to exists disk \"$VOL\"" 2>/dev/null | grep -q true && break
+  sleep 0.5
+done
+
 osascript <<OSA
 tell application "Finder"
   tell disk "$VOL"

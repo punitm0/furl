@@ -28,11 +28,35 @@ export type Release = {
 
 export const releases: Release[] = [
   {
+    version: "1.3.0",
+    date: "20 November 2026",
+    title: "Get space back",
+    lead: "One honest number to clean, a reason on every row, and simpler screens.",
+    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
+    new: [
+      { lead: "Get space back", text: "The Overview shows only what's safe to clean now and moves exactly that to the Trash in one step, with one Undo. The menu bar and the low-disk alert show the same number." },
+      { lead: "Why it's safe", text: "Every row says Safe, Check first or Permanent, and a Why? button explains what it is and whether it comes back." },
+      { lead: "Ask first", text: "Auto-Sweep can ask before each run and list what it would clean. Nothing is moved until you say Clean." },
+      { lead: "Disk", text: "Space Map and Snapshots are one screen, What's big and What grew, and every row leads to a way to free it." },
+      { lead: "Shortcuts", text: "Get safe space, Move safe items to Trash and Free up to… work in the Shortcuts app. Each asks before moving anything." },
+    ],
+    improved: [
+      { lead: "Apps & Leftovers", text: "One list, with removed apps grouped at the end. Clear All is gone, and every confirm lists what goes and its size." },
+      { lead: "Git Worktrees", text: "Worktrees with changes can only be removed one at a time, after Furl lists every changed file. Deleting merged branches is off unless you tick it." },
+      { lead: "Settings on the screen", text: "The unused-after days and the Large Files size sit on their screens. Any row can be left out with Don't scan here, with Undo." },
+      { lead: "Compress", text: "The technical details sit behind How. Removing photo location moved to Shrink and also removes place names." },
+      { lead: "Faster rescans", text: "Rescans read only the files that changed, even in very large folders." },
+    ],
+    fixed: [
+      { lead: "Cleanup tray", text: "Stays in step with each finished scan and no longer changes during a clean." },
+      { lead: "Banners", text: "The update card and progress strips no longer push the page around." },
+    ],
+  },
+  {
     version: "1.2.0",
     date: "19 November 2026",
     title: "Automatic updates",
     lead: "Furl now keeps itself up to date, and you can pay what you like for it.",
-    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
     new: [
       { lead: "Automatic updates", text: "Furl checks for a new version once a day and can install it and relaunch. Each update is checked against Furl's signature before anything is replaced. You can turn the check off in Settings." },
       { lead: "Pay what you like", text: "Support Furl with any amount you choose. Furl stays free, with every feature." },

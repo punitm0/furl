@@ -1,0 +1,11 @@
+---
+// schema.org JSON-LD (builders in src/lib/structuredData.ts). Search engines read it anywhere in the page,
+// so pages include this in their body and Base.astro's <head> stays untouched.
+interface Props {
+  graph: Record<string, unknown>[];
+}
+const { graph } = Astro.props;
+// Escape "<" so no string can close the script element early.
+const json = JSON.stringify({ "@context": "https://schema.org", "@graph": graph }).replace(/</g, "\\u003c");
+---
+<script type="application/ld+json" set:html={json} />

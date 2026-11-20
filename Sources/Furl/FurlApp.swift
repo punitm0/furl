@@ -30,6 +30,22 @@ enum AppServices {
         notifications.onCleanNow = {
             Task { await confirmAndCleanFromNotification() }
         }
+        notifications.onAskClean = {
+            Task { await scheduler.approvePendingFromNotification() }
+        }
+        notifications.onAskReview = {
+            Task { await scheduler.review() }
+        }
+        notifications.onUndoRun = { id in
+            guard let run = autoSweep.history.first(where: { $0.id == id }), run.canUndo else {
+                AppWindows.showMain(section: .activity, state: state)
+                return
+            }
+            Task { await state.undoAutoSweepRun(run, store: autoSweep) }
+        }
+        notifications.onSwitchToAutomatic = {
+            autoSweep.setMode(.automatic)
+        }
         notifications.configure()
         ProcessesStore.shared.startBackgroundMonitoring()
         ProcessesIntegration.connect(to: autoSweep)
@@ -47,6 +63,7 @@ enum AppServices {
         InspectorStore.shared.connect(to: state)
         ErrorLog.shared.connect(to: state)
         ScanTimingRecorder.shared.connect(to: state)
+        state.observeBrowsersForSafePlan()
         SnapshotsModel.connect()
         scheduler.start()
 
@@ -63,8 +80,8 @@ enum AppServices {
     /// "Clean now" on the low-disk notification: confirm in a regular alert, then clean safe items.
     private static func confirmAndCleanFromNotification() async {
         AppWindows.activateForWindow()
-        await state.prepareSafeCleanup()
-        let plan = state.safeCleanupPlan
+        // A settled, fresh scan: never a number from a scan that is still streaming in.
+        let plan = await state.freshSafeCleanupPlan()
         let alert = NSAlert()
         if plan.isEmpty {
             alert.messageText = "Nothing safe to clean right now"
@@ -76,10 +93,9 @@ enum AppServices {
             }
             return
         }
-        alert.messageText = "Move \(FileSizeHelper.formatBytes(plan.bytes)) of safe items to the Trash?"
-        let items = plan.junkCount == 1 ? "item" : "items"
-        let worktrees = plan.worktreeCount == 1 ? "worktree" : "worktrees"
-        alert.informativeText = "\(plan.junkCount) cache/junk \(items) rated Safe and \(plan.worktreeCount) merged \(worktrees). Caches go to the Trash first and can be undone; worktrees are removed with git."
+        // Same number and items as the Overview's "Safe now" (GetSpaceBack board).
+        alert.messageText = "Move \(FileSizeHelper.formatBytes(plan.bytes)) to the Trash?"
+        alert.informativeText = "Furl’s “Safe now” items: caches, logs and junk rated Safe. You can undo this in Furl."
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -192,6 +208,11 @@ struct FurlApp: App {
         PrivateStorage.prepare()
         _state = StateObject(wrappedValue: AppServices.state)
         _autoSweep = StateObject(wrappedValue: AppServices.autoSweep)
+        // A Shortcuts run that launches Furl also comes through here and brings the window up. There
+        // is no API that marks a launch as made for an App Intent: NSApplicationLaunchIsDefaultLaunchKey
+        // is also false when windows are restored, and on macOS 14 the `Window` scene opens at launch
+        // regardless (defaultLaunchBehavior is macOS 15+). Guessing wrong would hide the window on a
+        // normal launch, so this stays as is until an intent launch can be tested end to end.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
@@ -291,8 +312,8 @@ struct FurlApp: App {
         case .junk: await state.scanJunk()
         case .apps: await state.scanApps()
         case .largeFiles: await state.scanLargeFiles()
-        case .spaceMap: await state.scanSpace()
-        case .snapshots: await state.scanLargeFiles()
+        // Same as Disk's Rescan button: What grew refreshes the home index, which saves a snapshot.
+        case .disk: state.diskView == .grew ? await state.scanLargeFiles() : await state.scanSpace()
         case .duplicates: await state.scanDuplicates()
         case .smartReview: await state.scanSmartReview()
         case .processes: await ProcessesStore.shared.refresh()

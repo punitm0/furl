@@ -17,15 +17,6 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 248, ideal: 264, max: 320)
         } detail: {
             VStack(spacing: 0) {
-                if let progress = state.cleanupProgress {
-                    cleanupProgressBar(progress)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                if let err = state.errorBanner {
-                    errorBar(text: err)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
                 Group {
                     switch state.selectedSection {
                     case .dashboard:
@@ -38,10 +29,8 @@ struct ContentView: View {
                         AppUninstallerView(state: state)
                     case .largeFiles:
                         LargeFilesView(state: state)
-                    case .spaceMap:
-                        SpaceMapView(state: state)
-                    case .snapshots:
-                        SnapshotsView(state: state)
+                    case .disk:
+                        DiskView(state: state)
                     case .duplicates:
                         DuplicatesView(state: state)
                     case .smartReview:
@@ -70,6 +59,28 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.18), value: state.selectedSection)
             .background(Theme.ground)
             .tint(Theme.sweep)
+            // Drawn over the page, not in the stack above it, so a cleanup showing and hiding
+            // these strips never shifts the screen. Pinned under the screen header where the boards
+            // put them, so the header's buttons stay reachable while an error waits to be read.
+            .overlayPreferenceValue(ScreenHeaderBoundsKey.self, alignment: .top) { header in
+                GeometryReader { geo in
+                    VStack(spacing: 0) {
+                        if let progress = state.cleanupProgress {
+                            cleanupProgressBar(progress)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                        if let err = state.errorBanner {
+                            errorBar(text: err)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    // Slides in from the header's edge, never over it.
+                    .clipped()
+                    // Screens whose title scrolls with the page (Snapshots, History) have no header.
+                    .padding(.top, header.map { max(0, geo[$0].maxY) } ?? 0)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if let banner = state.statusBanner {
                     statusToast(text: banner)
@@ -78,6 +89,16 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: state.statusBanner)
+            // SettingsMoved board: "Don't scan here…" asks once before skipping a folder.
+            .alert(state.pendingNeverScan?.title ?? "", isPresented: Binding(
+                get: { state.pendingNeverScan != nil },
+                set: { if !$0 { state.pendingNeverScan = nil } }
+            ), presenting: state.pendingNeverScan) { request in
+                Button("Don’t Scan Here") { state.neverScan(request.folder, from: request.section) }
+                Button("Cancel", role: .cancel) {}
+            } message: { request in
+                Text(request.message)
+            }
             .animation(.easeInOut(duration: 0.2), value: state.cleanupProgress == nil)
             .animation(.easeInOut(duration: 0.2), value: state.errorBanner)
             .cleanupTrayColumn(state: state)
@@ -230,6 +251,12 @@ struct ContentView: View {
                 }
                 if let badge = badge(for: section), !isScanning(section) || badge.isSize {
                     switch badge {
+                    case .empty:
+                        // DiskScreen "Sections with nothing to do stay in the sidebar, quietly".
+                        Text("—")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.inkSecondary)
+                            .accessibilityLabel("Nothing to do")
                     case .size(let text):
                         Text(text)
                             .font(.system(size: 11, weight: .medium))
@@ -267,7 +294,8 @@ struct ContentView: View {
     private var sidebarDiskFooter: some View {
         let disk = state.diskUsage
         let total = Double(max(disk.totalBytes, 1))
-        let reclaimable = min(state.totalReclaimableBytes, disk.usedBytes)
+        // The safe number, as on the Overview and in the menu bar (GetSpaceBack board).
+        let reclaimable = min(state.safeCleanupPlan.bytes, disk.usedBytes)
         let usedOther = max(0, disk.usedBytes - reclaimable)
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -326,12 +354,12 @@ struct ContentView: View {
         case .junk: return state.isScanningJunk
         case .apps: return state.isScanningApps
         case .largeFiles: return state.isScanningLargeFiles
-        case .spaceMap: return state.isScanningSpace
+        case .disk: return state.isScanningSpace
         case .duplicates: return state.isScanningDuplicates
         case .smartReview: return state.isScanningSmart || state.isReviewingSmart
         case .processes: return false
         case .compress: return compress.isScanning
-        case .activity, .snapshots: return false
+        case .activity: return false
         case .find: return false
         }
     }
@@ -341,38 +369,40 @@ struct ContentView: View {
         case size(String)
         /// Count, shown as a tinted pill (mint, or Memory blue for RAM-related sections).
         case count(String, memory: Bool)
+        /// Scanned and found nothing: a quiet "—". Sections never hide, so ⌘1–9 stay put.
+        case empty
 
         var isSize: Bool { if case .size = self { true } else { false } }
     }
 
     private func badge(for section: SidebarSection) -> SidebarBadge? {
-        func size(_ bytes: Int64) -> SidebarBadge? {
-            bytes > 0 ? .size(FileSizeHelper.formatBytes(bytes)) : nil
+        func size(_ bytes: Int64, scanned: Bool) -> SidebarBadge? {
+            bytes > 0 ? .size(FileSizeHelper.formatBytes(bytes)) : (scanned ? .empty : nil)
         }
         switch section {
         case .dashboard:
             return nil
         case .worktrees:
-            return size(state.totalWorktreeReclaimableBytes)
+            return size(state.totalWorktreeReclaimableBytes, scanned: state.hasScannedWorktrees)
         case .junk:
-            return size(state.totalJunkReclaimableBytes)
+            return size(state.totalJunkReclaimableBytes, scanned: state.hasScannedJunk)
         case .apps:
-            return size(state.totalOrphanedAppDataBytes)
+            return size(state.totalOrphanedAppDataBytes, scanned: state.hasScannedApps)
         case .largeFiles:
-            return size(state.totalLargeFilesBytes)
-        case .spaceMap:
+            return size(state.totalLargeFilesBytes, scanned: state.hasScannedLargeFiles)
+        case .disk:
             return nil
         case .duplicates:
-            return size(state.totalDuplicateReclaimableBytes)
+            return size(state.totalDuplicateReclaimableBytes, scanned: state.hasScannedDuplicates)
         case .smartReview:
             let count = state.smartItems.filter { $0.verdict.label == .junk }.count
-            return count > 0 ? .count("\(count)", memory: false) : nil
+            return count > 0 ? .count("\(count)", memory: false) : (state.hasScannedSmart ? .empty : nil)
         case .processes:
             let count = processes.leftoverCount
-            return count > 0 ? .count("\(count)", memory: true) : nil
+            return count > 0 ? .count("\(count)", memory: true) : (processes.hasLoaded ? .empty : nil)
         case .compress:
-            return size(compress.estimatedSavingsBytes)
-        case .activity, .find, .snapshots:
+            return size(compress.estimatedSavingsBytes, scanned: compress.scanResult != nil)
+        case .activity, .find:
             return nil
         }
     }
@@ -434,6 +464,21 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(state.isCleaning)
+            } else if let undo = state.bannerUndo {
+                Button {
+                    undo.perform()
+                } label: {
+                    Text("Undo")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.onToast)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Theme.toastUndoFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(undo.help)
             } else if let undo = state.lastUndo {
                 Button {
                     Task { await state.undoLastCleanup() }
@@ -496,6 +541,15 @@ struct ContentView: View {
                     }
                     .buttonStyle(SweepLinkStyle())
                     .font(.system(size: 12, weight: .medium))
+                }
+                if !state.errorRescanSections.isEmpty {
+                    Button("Rescan") {
+                        errorExpanded = false
+                        Task { await state.rescanFromError() }
+                    }
+                    .buttonStyle(SweepLinkStyle())
+                    .font(.system(size: 12, weight: .medium))
+                    .disabled(state.isCleaning)
                 }
                 if mentionsPermissions {
                     Button("Open Privacy Settings") {

@@ -129,6 +129,96 @@ a worktree's `.build`, `~/Library/Caches/org.swift.swiftpm`, the Photos library.
 no sub-folder records, so any change inside it re-sizes the whole folder. See "Known gaps" in
 scan-engine.md for the fix (keep 2 levels of sub-folder records inside size-only folders).
 
+### Hidden sub-folder records in size-only folders (2026-11-20)
+
+Size-only folders now keep two levels of hidden sub-folder records (scan-engine.md, "Incremental details"),
+so a change deep inside `.git`, `.build` or `node_modules` re-sizes one level-2 sub-folder, not the whole
+folder. Same Mac; other sessions were building in this repo while it ran, so whole-home times are noisy.
+
+**Index size** (fresh full walk, `ScanBench incremental`):
+
+| Root | Visible dir records | Hidden dir records | File records | On disk before | On disk after |
+|---|---:|---:|---:|---:|---:|
+| `~/Documents` (3.7 M files, many `node_modules`/`.git`) | 18 597 | 50 611 (+272 %) | 14 078 | 4.1 MB | 12.3 MB |
+| `~` (5.8 M files) | 102 841 | 67 288 (+65 %) | 113 874 | 29.7 MB | 40.4 MB |
+
+The first full walk takes the same time (25.5 → 23.1 s on `~/Documents`, 58.1 → 57.0 s on `~`). On a
+quiet tree (`~/Documents/projects/zest`, 930 765 files) before and after give the same totals: 930 765 files,
+83 965 dirs, 9.61 GB allocated, 523.1 MB reclaimable, 1 346 visible dir records.
+
+**Cost of one change inside a size-only folder** (`ScanBench sizeonly`, warm): before, a re-size of the
+whole folder; after, a re-size of one level-2 leaf (a change at level 0/1 is a shallow read of one folder).
+
+| Folder | Files | Whole folder (before) | Level-2 leaves | Median leaf (after) | Slowest leaf |
+|---|---:|---:|---:|---:|---:|
+| a repo's `.git` | 986 | 0.009 s | 53 | 0.0003 s | 0.003 s |
+| this repo's `.git` | 370 | 0.005 s | 172 | 0.0002 s | 0.002 s |
+| a worktree's `.build` | 5 190 | 0.051 s | 15 | 0.0003 s | 0.030 s |
+| a big `node_modules` | 64 560 | 0.268 s | 1 121 | 0.0004 s | 0.034 s |
+
+**Incremental patch, `ScanBench incremental`** (new step: 10 240 files 4 levels inside a `node_modules`,
+then change one file):
+
+| Step | `~/Documents` before | after | `~` before | after |
+|---|---:|---:|---:|---:|
+| Rescan, nothing of ours changed | 0.031 s (unchanged) | 0.026 s (unchanged) | 10.3 s (30 shallow, 3 deep) | 7.6 s (57 shallow, 3 deep) |
+| After creating files/folders | 0.020 s | 0.045 s | 7.5 s (9 shallow, 0 deep) | 7.4 s (12 shallow, 0 deep) |
+| After deleting a sub-folder | 0.045 s | 0.057 s | 10.8 s | 8.5 s |
+| File changed 4 levels inside `node_modules` | 0.099 s, re-sized `node_modules` | 0.050 s, re-sized `node_modules/big/3` | 3.7 s (deep: `.build`, `org.swift.swiftpm`, `node_modules`) | 11.0 s (deep: `node_modules/big/3`, a `.astro/vite-sync`) |
+
+Every patched subtree matched a fresh walk byte-for-byte (3 756 032 B, 3 055 616 B, 42 045 440 B).
+
+**Where the home time goes now.** Timing each phase showed load, compact and save take under 0.1 s in
+total; 8–11 s is the walk, and almost all of it is **shallow re-reads of two huge flat cache folders**
+that browsers write into constantly: `~/Library/Application Support/Claude/Cache/Cache_Data` (84 581
+entries) and Chrome's `Default/Cache/Cache_Data` (60 610 entries). One `getattrlistbulk` pass over each takes
+seconds (with APFS private size). These are indexed folders, so this change doesn't affect them. Size-only
+re-sizing, the cost in the 13–20 s runs above, is now milliseconds per change.
+
+### Huge flat folders: file-level FSEvents + per-file tables (2026-11-20)
+
+Fix for the two-cache-folder cost above (scan-engine.md, "Incremental details" and Known gap 6).
+
+**Why the re-read was slow** (`ScanBench hotprobe <folder>…`, warm, one `getattrlistbulk` pass each):
+
+| Folder | Files | With private size | Without | EXT_FLAGS only |
+|---|---:|---:|---:|---:|
+| `~/Library/Application Support/Claude/Cache/Cache_Data` | 84 667 | 7.5–8.6 s | 2.0 s | 0.6 s |
+| `~/Library/Caches/Google/Chrome/Default/Cache/Cache_Data` | 66 607 | 2.0–3.4 s | 0.8 s | 0.4 s |
+| Claude `Partitions/…/Cache/Cache_Data` | 60 019 | 2.6–4.0 s | 0.7 s | 0.3 s |
+
+APFS private size is ~50–100 µs per file. 94 % of the files are under 32 KB, so they were never kept
+individually. Over 90 s of normal use, FSEvents history held 111 folder-level events, or 313 file-level
+events naming 39 files in Claude's `Cache_Data`. Replay took 0.02 s either way. So re-reading only the named
+files is three orders of magnitude cheaper than re-reading the folder.
+
+**Home incremental** (`ScanBench incremental`, same Mac, other sessions busy):
+
+| Step | Before | After |
+|---|---:|---:|
+| First scan, no saved index | 64.3 s | 60.5 s |
+| Rescan a minute later (×3) | — | 0.58 s / 0.42 s / 0.56 s (5–55 files re-read in 3–5 huge folders) |
+| Rescan, nothing of ours changed | 11.7 s (31 shallow) | 0.11 s |
+| After creating files/folders | 16.1 s (12 shallow) | 0.14 s |
+| After deleting a sub-folder | 12.2 s | 0.51 s |
+| 10 240 files added inside a `node_modules` | 11.8 s | 1.23 s |
+| File changed 4 levels inside `node_modules` | 11.1 s | 0.21 s |
+| New 5 000-file flat folder, then 3 files changed in it | — | 0.79 s, then 0.19 s |
+
+Every patched subtree matched a fresh walk byte-for-byte (3 756 032 B, 3 055 616 B, 42 045 440 B, and the
+flat folder: 20 566 016 B / 5 000 files). Whole-root totals differ only by files other apps changed between
+the two walks.
+
+After review fixes (re-used sub-folders must match by file ID, case-only renames read the folder, partial
+listings get no table, file events grouped by folder): rescans a minute apart 0.49 / 0.42 / 0.55 s,
+nothing of ours changed 0.13 s, after deleting a sub-folder 0.47 s, 10 240 files in a `node_modules`
+0.97 s, 3 files in the flat folder 0.23 s — same range, every subtree still matching. 100 000 synthetic
+file events in 1 000 new folders patch in 0.65 s.
+
+**Index size on `~`**: 16 folders have a table, 329 305 entries in all (the three caches above, Claude's
+and Chrome's `Code Cache/js`, editor extension `webview/assets`, `~/.cache/fontconfig`, …). On disk
+42.1 → 64.9 MB (48 B per entry plus its name). Load and save stay inside the 0.1–0.6 s totals above.
+
 ### Worker width (`ScanBench widths`, home, warm)
 
 | Width | 2 | 4 | 8 | 12 | 16 | 24 |

@@ -12,6 +12,8 @@ tldr:
 updated: 2026-11-18
 ---
 
+To find dev servers an AI agent left running, list every listening port with `lsof -nP -iTCP -sTCP:LISTEN`, then stop the process with `kill <pid>`.
+
 Coding agents start things: dev servers, file watchers, test runners, simulators. When the session ends, or you close the terminal tab, those processes often keep running. They hold ports, use memory and wake the CPU, sometimes for days.
 
 ## Find what's listening on a port

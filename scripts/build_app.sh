@@ -25,6 +25,46 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+# Shortcuts actions (Sources/Furl/Intents). The Shortcuts app only lists them when the bundle has
+# Resources/Metadata.appintents, which Xcode normally makes and SwiftPM doesn't. The Swift build
+# already writes the constant-value files the extractor needs (*.swiftconstvalues), so run Apple's
+# extractor on them here. Metadata is the same for both architectures; arm64's is used.
+OBJ_DIR="$(dirname "$(dirname "$(dirname "$BIN_PATH")")")/Intermediates.noindex/$APP_NAME.build/Release/$APP_NAME-p.build/Objects-normal/arm64"
+CONST_VALUES=("$OBJ_DIR"/*.swiftconstvalues)
+if [[ ! -e "${CONST_VALUES[0]}" ]]; then
+  echo "Error: no .swiftconstvalues in $OBJ_DIR; Shortcuts actions would be missing." >&2
+  exit 1
+fi
+if ! xcrun --find appintentsmetadataprocessor >/dev/null 2>&1; then
+  echo "Error: appintentsmetadataprocessor not found. Install Xcode and run xcode-select -s." >&2
+  exit 1
+fi
+INTENTS_TMP="$(mktemp -d)"
+trap 'rm -rf "$INTENTS_TMP"' EXIT
+if [[ -f "$OBJ_DIR/$APP_NAME.SwiftFileList" ]]; then
+  cp "$OBJ_DIR/$APP_NAME.SwiftFileList" "$INTENTS_TMP/sources.list"
+else
+  find "$ROOT_DIR/Sources/$APP_NAME" -name '*.swift' > "$INTENTS_TMP/sources.list"
+fi
+printf '%s\n' "${CONST_VALUES[@]}" > "$INTENTS_TMP/constvalues.list"
+SWIFTC_PATH="$(xcrun --find swiftc)"
+xcrun appintentsmetadataprocessor \
+  --output "$RESOURCES_DIR" \
+  --toolchain-dir "${SWIFTC_PATH%/usr/bin/swiftc}" \
+  --module-name "$APP_NAME" \
+  --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+  --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+  --platform-family macOS \
+  --deployment-target 14.0 \
+  --target-triple arm64-apple-macos14.0 \
+  --source-file-list "$INTENTS_TMP/sources.list" \
+  --swift-const-vals-list "$INTENTS_TMP/constvalues.list" \
+  --quiet-warnings 2>&1 | grep -v -e "Starting appintentsmetadataprocessor" -e "Writing Metadata.appintents" -e "Metadata root:" || true
+if [[ ! -f "$RESOURCES_DIR/Metadata.appintents/extract.actionsdata" ]]; then
+  echo "Error: Metadata.appintents was not generated; Shortcuts actions would be missing." >&2
+  exit 1
+fi
+
 ICON_PATH="$ROOT_DIR/Resources/AppIcon.icns"
 if [[ ! -f "$ICON_PATH" ]]; then
   echo "Generating app icon..."
@@ -54,9 +94,9 @@ cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.0</string>
+    <string>1.3.0</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>4</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHumanReadableCopyright</key>

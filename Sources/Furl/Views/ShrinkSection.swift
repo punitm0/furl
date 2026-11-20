@@ -45,6 +45,7 @@ struct ShrinkSection: View {
                 if store.hasScanned {
                     kinds
                     recentRow
+                    photoDetailsRow
                     optionalTools
                     estimateRow
                     ShrinkRatioColumns(ratio: 1.6, spacing: 20) {
@@ -285,6 +286,30 @@ struct ShrinkSection: View {
             .fixedSize()
         }
         .font(Theme.caption)
+        .disabled(store.isRunning)
+    }
+
+    /// Only photos that were replaced lose their details; the rest keep the original file untouched.
+    private func photoDetailsLine(_ run: ShrinkRunResult) -> String {
+        func photos(_ n: Int) -> String { "\(n.formatted()) photo\(n == 1 ? "" : "s")" }
+        var line = "Location and camera details removed from \(photos(run.shrunkPhotoCount))."
+        if run.unshrunkPhotoCount > 0 { line += " \(photos(run.unshrunkPhotoCount)) left as they were." }
+        return line
+    }
+
+    /// CompressSimple: moved here from Lossless, which promises identical files. Shrink already rewrites photos.
+    private var photoDetailsRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle("Also remove photo location and camera details", isOn: $store.options.stripPhotoMetadata)
+                .toggleStyle(.furlCheckbox)
+                .font(Theme.caption)
+                .accessibilityHint("Where and with what each photo was taken. Off by default.")
+            Text("Where and with what each photo was taken. Off by default.")
+                .font(Theme.micro)
+                .foregroundStyle(Theme.inkSecondary)
+                .padding(.leading, 22)
+                .accessibilityHidden(true)
+        }
         .disabled(store.isRunning)
     }
 
@@ -672,6 +697,11 @@ struct ShrinkSection: View {
             Text("\(shrunk.formatted()) shrunk at lower quality · \(kept.formatted()) kept as is (less than \(Int(store.options.minimumSavingsFraction * 100))% smaller) · \(skipped.formatted()) skipped · \(failed.formatted()) failed")
                 .foregroundStyle(Theme.inkTertiary)
                 .fixedSize(horizontal: false, vertical: true)
+            if run.removedPhotoDetails, run.shrunkPhotoCount + run.unshrunkPhotoCount > 0 {
+                Text(photoDetailsLine(run))
+                    .foregroundStyle(Theme.inkTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if shrunk > 0 || !notable.isEmpty {
                 HStack(spacing: 8) {
                     if shrunk > 0 {
@@ -776,6 +806,8 @@ struct ShrinkPreviewSheet: View {
     @ObservedObject var store: ShrinkStore
     @Environment(\.dismiss) private var dismiss
     @State private var showDetail = false
+    /// "How ▸" next to the quality label: the measured number and the encoder settings.
+    @State private var showHow = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -848,7 +880,7 @@ struct ShrinkPreviewSheet: View {
             .padding(.vertical, 14)
 
             HStack(alignment: .center, spacing: 10) {
-                Text("Applies these settings to \(store.eligible.count.formatted()) file\(store.eligible.count == 1 ? "" : "s"). Originals go to the Trash; anything less than \(Int(store.options.minimumSavingsFraction * 100))% smaller keeps its original.")
+                Text("Applies these settings to \(store.eligible.count.formatted()) file\(store.eligible.count == 1 ? "" : "s"). Originals go to the Trash; anything less than \(Int(store.options.minimumSavingsFraction * 100))% smaller keeps its original.\(store.options.stripPhotoMetadata ? " Photos that get smaller also lose their location and camera details." : "")")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.inkSecondary)
                     .lineSpacing(1)
@@ -917,7 +949,11 @@ struct ShrinkPreviewSheet: View {
     }
 
     private func summary(_ preview: ShrinkPreview) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Notes read "HEIC at 72% quality · first page shown": the settings go behind How, caveats stay visible.
+        let noteParts = preview.note.components(separatedBy: " · ")
+        let how = preview.quality.howText(note: noteParts.first ?? "")
+        let caveats = noteParts.dropFirst().joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 16) {
                 Text("\(FileSizeHelper.formatBytes(preview.originalBytes)) → \(preview.isProjected ? "≈ " : "")\(FileSizeHelper.formatBytes(preview.newBytes))")
                     .font(Theme.display(20))
@@ -935,13 +971,36 @@ struct ShrinkPreviewSheet: View {
                              track: Theme.hairline, height: 5)
                         .frame(width: 160)
                 }
-                if !preview.quality.detail.isEmpty {
-                    Text(preview.quality.detail).font(Theme.caption).foregroundStyle(Theme.inkSecondary)
+                if !caveats.isEmpty {
+                    Text(caveats.prefix(1).uppercased() + caveats.dropFirst())
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.inkSecondary)
                 }
                 Spacer()
+                if !how.isEmpty {
+                    Button(showHow ? "How ▾" : "How ▸") {
+                        withAnimation(.easeOut(duration: 0.15)) { showHow.toggle() }
+                    }
+                    .buttonStyle(SweepLinkStyle())
+                    .font(Theme.caption.weight(.medium))
+                    .accessibilityLabel("How the quality was measured")
+                    .accessibilityValue(showHow ? "Expanded" : "Collapsed")
+                }
             }
-            if !preview.note.isEmpty {
-                Text(preview.note).font(Theme.caption).foregroundStyle(Theme.inkSecondary)
+            if showHow {
+                if !how.isEmpty {
+                    Text(how)
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.inkTertiary)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
+                        .transition(.opacity)
+                }
             }
             if let problem = preview.problem {
                 Label(problem, systemImage: "info.circle")

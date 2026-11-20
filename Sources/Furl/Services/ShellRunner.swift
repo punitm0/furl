@@ -5,6 +5,8 @@ struct ShellOutput: Sendable {
     let stdout: String
     let stderr: String
     var timedOut: Bool = false
+    /// Output arrived but wasn't valid UTF-8, so `stdout` is empty. Never read that as "nothing".
+    var stdoutUndecodable: Bool = false
 }
 
 enum ShellRunner {
@@ -88,11 +90,13 @@ enum ShellRunner {
         }
         group.wait()
 
+        let decoded = String(data: stdoutData, encoding: .utf8)
         return ShellOutput(
             exitCode: timedOut ? -2 : process.terminationStatus,
-            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+            stdout: decoded ?? "",
             stderr: timedOut ? "Timed out after \(Int(timeout))s" : (String(data: stderrData, encoding: .utf8) ?? ""),
-            timedOut: timedOut
+            timedOut: timedOut,
+            stdoutUndecodable: decoded == nil && !stdoutData.isEmpty
         )
     }
 
@@ -205,11 +209,15 @@ enum ShellRunner {
     /// program git might run, it has submodules or files status skips, or status failed or timed out.
     /// Callers treat nil as "dirty". Untracked files are always listed, whatever `status.showUntrackedFiles`
     /// says, because `git worktree remove` deletes them.
-    static func gitStatusPorcelain(in directory: String, timeout: TimeInterval = 60) -> String? {
+    ///
+    /// `everyFile` lists each untracked file on its own (not just its new folder) as NUL-separated
+    /// `-z` output, for anything that shows or counts what would be lost.
+    static func gitStatusPorcelain(in directory: String, timeout: TimeInterval = 60, everyFile: Bool = false) -> String? {
         guard repoConfigRunsNoPrograms(in: directory), !hasSubmodules(in: directory),
               !hasHiddenEdits(in: directory) else { return nil }
-        let status = git(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all"],
+        let listing = everyFile ? ["--untracked-files=all", "-z"] : ["--untracked-files=normal"]
+        let status = git(["status", "--porcelain"] + listing + ["--ignore-submodules=all"],
                          in: directory, timeout: timeout)
-        return status.exitCode == 0 ? status.stdout : nil
+        return status.exitCode == 0 && !status.stdoutUndecodable ? status.stdout : nil
     }
 }

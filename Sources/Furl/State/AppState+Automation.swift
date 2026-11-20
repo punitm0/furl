@@ -14,10 +14,9 @@ extension AppState {
         var paths: [String] = []
         var bytes: Int64 = 0
         var junkCount = 0
-        var worktreeCount = 0
         /// Every path that goes to the Trash with an item: its own path first, then `extraPaths`.
         var itemPaths: [String: [String]] = [:]
-        var worktreePaths: Set<String> = []
+        var itemBytes: [String: Int64] = [:]
         /// Browser caches: skipped at clean time while their browser runs.
         var browserCachePaths: Set<String> = []
         var isEmpty: Bool { paths.isEmpty }
@@ -26,77 +25,102 @@ extension AppState {
     /// Scan results older than this are rescanned before "Clean safe items" moves anything.
     static let safeCleanupMaxResultAge: TimeInterval = 10 * 60
 
-    /// Junk with risk `.safe` plus merged worktrees passing `canAutoSelect` — the same items the
-    /// Junk and Worktrees sections pre-select. Items nested inside another item count once.
-    /// Tool-cleaned junk (docker, simctl) has no file to move, so it's never part of this.
-    var safeCleanupPlan: SafeCleanupPlan {
-        var entries: [(path: String, extra: [String], bytes: Int64, isWorktree: Bool, isBrowser: Bool)] = []
-        entries += worktrees.filter(\.canAutoSelect).map { ($0.worktreePath, [], $0.sizeBytes, true, false) }
-        entries += junkItems.filter { $0.risk == .safe && $0.command == nil }
-            .map { ($0.path, $0.extraPaths, $0.sizeBytes, false, $0.category == .browserCaches) }
+    /// "Safe now" (GetSpaceBack board): the one number the Overview, the menu bar, the low-disk alert
+    /// and Shortcuts show, and exactly what their button moves to the Trash. Only caches and junk the
+    /// scanner rates Safe, that are still ticked in Caches & Junk, that have a file to move (never Docker
+    /// or Simulator items, which can't go to the Trash) and that aren't protected. Browser caches count
+    /// only while their browser is closed, since the clean skips them otherwise. Worktrees, duplicates,
+    /// leftovers and large files are never part of it: they need a look first. Items nested inside
+    /// another item count once. `AppState.safeCleanupPlan` holds the current one.
+    nonisolated static func safeCleanupPlan(junk: [JunkItem], ticked: Set<String>,
+                                            isProtected: (String) -> Bool = DeletionService.isProtected,
+                                            isBrowserRunning: (String) -> Bool = { _ in false }) -> SafeCleanupPlan {
+        let safe = junk.filter { item in
+            item.risk == .safe && !item.isPermanent && ticked.contains(item.id)
+                && !isProtected(item.path) && !item.extraPaths.contains(where: isProtected)
+                && !(item.category == .browserCaches && isBrowserRunning(item.path))
+        }
         var plan = SafeCleanupPlan()
-        for entry in Self.removingNested(entries, path: \.path) {
-            plan.paths.append(entry.path)
-            plan.itemPaths[entry.path] = [entry.path] + entry.extra
-            plan.bytes += entry.bytes
-            if entry.isBrowser { plan.browserCachePaths.insert(entry.path) }
-            if entry.isWorktree {
-                plan.worktreeCount += 1
-                plan.worktreePaths.insert(entry.path)
-            } else {
-                plan.junkCount += 1
-            }
+        for item in removingNested(safe, path: \.path) {
+            plan.paths.append(item.path)
+            plan.itemPaths[item.path] = [item.path] + item.extraPaths
+            plan.itemBytes[item.path] = item.sizeBytes
+            plan.bytes += item.sizeBytes
+            plan.junkCount += 1
+            if item.category == .browserCaches { plan.browserCachePaths.insert(item.path) }
         }
         return plan
     }
 
-    var hasScannedForSafeCleanup: Bool { hasScannedJunk && hasScannedWorktrees }
+    var hasScannedForSafeCleanup: Bool { hasScannedJunk }
 
-    /// Runs the junk and worktree scans the menu bar needs, if they haven't run yet.
+    /// Runs the junk scan the menu bar needs, if it hasn't run yet.
     func prepareSafeCleanup() async {
-        let needJunk = !hasScannedJunk && !isScanningJunk
-        let needWorktrees = !hasScannedWorktrees && !isScanningWorktrees
-        async let jk: Void = needJunk ? scanJunk() : ()
-        async let wt: Void = needWorktrees ? scanWorktrees() : ()
-        _ = await (jk, wt)
+        if !hasScannedJunk && !isScanningJunk { await scanJunk() }
     }
 
-    /// "Clean safe items" from the menu bar or a low-disk notification. The caller confirms first and
+    /// The safe plan from a settled scan no older than `safeCleanupMaxResultAge`: waits for a scan
+    /// that's running and rescans stale results. For anything that shows the number without the
+    /// Overview in front of it (low-disk alert and notification, Shortcuts).
+    func freshSafeCleanupPlan() async -> SafeCleanupPlan {
+        await refreshSafeCleanupScans(maxAge: Self.safeCleanupMaxResultAge)
+        return safeCleanupPlan
+    }
+
+    /// A safe clean needs something confirmed and no other cleanup running (a second click, the menu
+    /// bar and the Overview at once, or the tray): only one ever runs.
+    func canStartSafeClean(confirmedPaths: [String]) -> Bool {
+        !confirmedPaths.isEmpty && !isCleaning
+    }
+
+    /// What a safe clean may move: items in the plan right now (Safe and ticked after any rescan) that
+    /// the user confirmed and didn't untick while it was checking.
+    nonisolated static func safeCleanTargets(plan: SafeCleanupPlan, confirmed: Set<String>,
+                                             vetoed: Set<String>) -> [CleanupItem] {
+        plan.paths.filter { confirmed.contains($0) && !vetoed.contains($0) }.map { path in
+            var item = CleanupItem(path: path, allPaths: plan.itemPaths[path] ?? [path])
+            item.isBrowserCache = plan.browserCachePaths.contains(path)
+            return item
+        }
+    }
+
+    /// "Clean safe items" from the Overview, the menu bar or a low-disk notification. The caller confirms first and
     /// passes the item paths of the plan it showed (`confirmedPaths`), so a scan that lands while the
-    /// confirmation is up can't add items the user never saw.
+    /// confirmation is up can't add items the user never saw, and an item the user unticks while it's
+    /// checking stays put. Returns nil without doing anything while another cleanup runs.
     ///
-    /// Scan results can be old. If the junk or worktree results are older than
+    /// Scan results can be old. If the junk results are older than
     /// `safeCleanupMaxResultAge` they're rescanned first, and only items that were in the plan the
     /// user confirmed *and* are still safe after the rescan are cleaned (new finds wait for the
     /// next time the user sees them). Every item is then re-checked on disk right before it moves
     /// (`CleanupRecheck`): it must still exist, be the same kind (file, folder, link) and carry the
-    /// modification date the scan saw; merged worktrees must also still have no uncommitted changes,
-    /// and browser caches are left alone while their browser runs. Anything that fails is skipped,
+    /// modification date the scan saw, and browser caches are left alone while their browser runs. Anything that fails is skipped,
     /// and the banner and History count only what actually went to the Trash.
     @discardableResult
     func cleanSafeItems(store: AutoSweepStore, trigger: AutoSweepRun.Trigger,
                         confirmedPaths: [String]) async -> AutoSweepRun? {
-        guard !confirmedPaths.isEmpty, !isCleaning else { return nil }
+        guard canStartSafeClean(confirmedPaths: confirmedPaths) else { return nil }
         isCleaning = true
         safeCleanNote = nil
+        trackSafeCleanVetoes(true)
         // "Checking…" covers the rescan of stale results and the on-disk re-check; "Cleaning…" the move.
         setSafeCleanPhase(.checking)
         defer {
             isCleaning = false
+            trackSafeCleanVetoes(false)
             setSafeCleanPhase(nil)
         }
 
         await refreshSafeCleanupScans(maxAge: Self.safeCleanupMaxResultAge)
+        // Cancelled mid-rescan: the list may be half filled, so move nothing.
+        guard !Task.isCancelled, !isScanningJunk else { return nil }
 
-        let current = safeCleanupPlan
         let confirmedSet = Set(confirmedPaths)
-        let items = current.paths.filter { confirmedSet.contains($0) }.map { path in
-            var item = CleanupItem(path: path, allPaths: current.itemPaths[path] ?? [path])
-            item.requireCleanWorktree = current.worktreePaths.contains(path)
-            item.isBrowserCache = current.browserCachePaths.contains(path)
-            return item
-        }
-        let stamps = cleanupStamps.junk.merging(cleanupStamps.worktrees) { a, _ in a }
+        let items = Self.safeCleanTargets(plan: safeCleanupPlan, confirmed: confirmedSet,
+                                          vetoed: safeCleanVetoes ?? [])
+        // From here on the list is fixed; later unticks no longer apply.
+        trackSafeCleanVetoes(false)
+        let stamps = cleanupStamps.junk
         let check = await Task.detached(priority: .userInitiated) {
             CleanupRecheck.verify(items, stamps: stamps)
         }.value
@@ -108,8 +132,6 @@ extension AppState {
         // once any of its paths actually went to the Trash.
         let trashedPaths = Set(result.trashedItems.map(\.originalPath))
         let removed = check.verified.filter { $0.allPaths.contains(where: trashedPaths.contains) }
-        let removedWorktrees = removed.filter(\.requireCleanWorktree).count
-        let removedJunk = removed.count - removedWorktrees
 
         // Items dropped by the rescan never reach the check, and an item can still fail the
         // per-path check right before it moves; count both as skipped too.
@@ -123,14 +145,12 @@ extension AppState {
 
         junkItems.removeAll { $0.command == nil && !Self.pathExists($0.path) }
         selectedJunkIDs.formIntersection(Set(junkItems.map(\.id)))
-        worktrees.removeAll { $0.canAutoSelect && !Self.pathExists($0.worktreePath) }
-        selectedWorktreeIDs.formIntersection(Set(worktrees.map(\.id)))
         refreshDiskInfo()
 
         // Nothing moved and nothing failed: no History entry for a cleanup that didn't happen.
         guard !removed.isEmpty || !result.errors.isEmpty else {
             if skippedCount > 0 {
-                showNothingCleaned(rescan: [.junk, .worktrees])
+                showNothingCleaned(rescan: [.junk])
                 safeCleanNote = Self.nothingCleanedText
             }
             return nil
@@ -143,7 +163,7 @@ extension AppState {
                 rule: .safeClean,
                 itemCount: removed.count,
                 bytes: result.reclaimedBytes,
-                detail: "\(removedJunk) cache/junk item(s), \(removedWorktrees) merged worktree(s)"
+                detail: "\(removed.count) cache/junk item(s)"
             )],
             trashed: Self.ledgerEntries(result),
             errors: result.errors,
@@ -151,7 +171,8 @@ extension AppState {
         )
         store.record(run, countsAsAutoSweep: false)
 
-        if !removed.isEmpty {
+        // The Overview shows its own "Freed…" banner with Undo (GetSpaceBack board).
+        if !removed.isEmpty && trigger != .overview {
             statusBanner = Self.withSkipped("Moved \(removed.count) safe item(s) to the Trash (\(FileSizeHelper.formatBytes(result.reclaimedBytes))). Undo from Settings › Automation.", skippedCount)
         }
         if !result.errors.isEmpty {
@@ -168,30 +189,26 @@ extension AppState {
         NSLog("Furl: %@ skipped %ld item(s) that changed since the scan", context, count)
     }
 
-    /// Rescans junk and worktrees when their results are older than `maxAge` (0 = always), and
-    /// waits until results newer than this call are in. A scan already running counts: its
-    /// results land after this call started.
+    /// Rescans junk when its results are older than `maxAge` (0 = always), and waits until results
+    /// newer than this call are in. A scan already running is waited for, whatever the age of the
+    /// last one: while it streams, the junk list is only partly filled.
     func refreshSafeCleanupScans(maxAge: TimeInterval) async {
         let start = Date()
         func isStale(_ date: Date?) -> Bool {
             guard let date else { return true }
             return maxAge <= 0 || start.timeIntervalSince(date) > maxAge
         }
-        async let jk: Void = isStale(cleanupStamps.junkDate) ? waitForFreshScan(junk: true, after: start) : ()
-        async let wt: Void = isStale(cleanupStamps.worktreesDate) ? waitForFreshScan(junk: false, after: start) : ()
-        _ = await (jk, wt)
+        if isStale(cleanupStamps.junkDate) || isScanningJunk { await waitForFreshScan(after: start) }
     }
 
-    /// Junk (`junk: true`) or worktrees: returns once that scan has finished after `start`.
-    private func waitForFreshScan(junk: Bool, after start: Date) async {
-        while ((junk ? cleanupStamps.junkDate : cleanupStamps.worktreesDate) ?? .distantPast) < start {
-            if junk ? isScanningJunk : isScanningWorktrees {
+    /// Returns once a junk scan has finished after `start`, or when the task is cancelled.
+    private func waitForFreshScan(after start: Date) async {
+        while (cleanupStamps.junkDate ?? .distantPast) < start && !Task.isCancelled {
+            if isScanningJunk {
                 // Starting a scan now would only queue a rescan and return; wait for the running one.
                 try? await Task.sleep(for: .milliseconds(200))
-            } else if junk {
-                await scanJunk()
             } else {
-                await scanWorktrees()
+                await scanJunk()
             }
         }
     }
@@ -199,45 +216,53 @@ extension AppState {
     // MARK: - Auto-Sweep jobs
 
     /// The scheduled job: caches and stale dependency folders not used in N days.
-    func runScheduledAutoSweep(store: AutoSweepStore, trigger: AutoSweepRun.Trigger) async -> AutoSweepRun {
+    func runScheduledAutoSweep(store: AutoSweepStore, trigger: AutoSweepRun.Trigger,
+                               skipping skips: Set<String> = []) async -> AutoSweepRun {
         let roots = projectRoots
         let days = store.cachesUnusedDays
+        let excluded = excludedScanRoots
         // Always a fresh scan right before cleaning, then the same on-disk re-check as
         // "Clean safe items": anything that changed while the sweep was deciding is left alone.
         let (verified, stamps) = await Task.detached(priority: .utility) {
             let candidates = Self.removingNested(Self.autoSweepCacheCandidates(roots: roots, unusedDays: days), path: \.path)
+                .filter { !Self.isExcluded($0.path, by: excluded) && !skips.contains($0.path) }
             let items = candidates.map { CleanupItem(path: $0.path, allPaths: [$0.path] + $0.extraPaths) }
             let stamps = CleanupStamp.read(junk: candidates)
             return (CleanupRecheck.verify(items, stamps: stamps).verified, stamps)
         }.value
         let result = await Self.moveToTrash(verified.flatMap(\.allPaths), expected: stamps)
+        let parts = [AutoSweepRunPart(rule: .caches, itemCount: result.succeededCount, bytes: result.reclaimedBytes,
+                                      detail: "Not used in \(days) days")]
         let run = AutoSweepRun(
             date: Date(),
             trigger: trigger,
-            parts: [AutoSweepRunPart(rule: .caches, itemCount: result.succeededCount, bytes: result.reclaimedBytes,
-                                     detail: "Not used in \(days) days")],
+            parts: parts,
             trashed: Self.ledgerEntries(result),
-            errors: result.errors
+            errors: result.errors,
+            why: trigger == .scheduled ? AutoSweepWhy.text(parts: parts, frequency: store.frequency, approved: false,
+                                                           processHours: store.stopProcessesAfterHours) : nil
         )
         afterAutoSweep()
         return run
     }
 
     /// Daily chores: expire Furl's own Trash items, tidy Downloads, plus the manager's hooks.
-    func runDailyAutoSweep(store: AutoSweepStore, trigger: AutoSweepRun.Trigger) async -> AutoSweepRun {
+    func runDailyAutoSweep(store: AutoSweepStore, trigger: AutoSweepRun.Trigger,
+                           skipping skips: Set<String> = []) async -> AutoSweepRun {
         var parts: [AutoSweepRunPart] = []
         var trashed: [TrashLedgerEntry] = []
         var errors: [String] = []
         var skipped = 0
 
         if store.stopProcessesEnabled, let hook = store.stopLeftoverProcesses,
-           let part = await hook(store.stopProcessesAfterHours) {
+           let part = await hook(store.stopProcessesAfterHours, await processIDs(store: store, skipping: skips)) {
             parts.append(part)
         }
 
         if store.expireTrashEnabled {
             store.pruneLedger()
             let expired = store.expiredLedgerEntries(olderThanDays: store.expireTrashDays)
+                .filter { !skips.contains($0.trashPath) }
             if !expired.isEmpty {
                 let outcome = await Task.detached(priority: .utility) {
                     Self.permanentlyRemove(expired)
@@ -251,7 +276,11 @@ extension AppState {
         }
 
         if store.tidyDownloadsEnabled {
-            let candidates = await Task.detached(priority: .utility) { DownloadsTidier.candidates() }.value
+            let excluded = excludedScanRoots
+            let candidates = await Task.detached(priority: .utility) {
+                DownloadsTidier.candidates().filter { !Self.isExcluded($0.path, by: excluded) }
+            }.value
+                .filter { !skips.contains($0.path) }
             if !candidates.isEmpty {
                 // Each candidate carries how it looked when its age (and, for archives, the unzipped
                 // folder) was judged; one that changed since is left alone.
@@ -276,7 +305,167 @@ extension AppState {
 
         afterAutoSweep()
         return AutoSweepRun(date: Date(), trigger: trigger, parts: parts, trashed: trashed, errors: errors,
-                            skippedCount: skipped > 0 ? skipped : nil)
+                            skippedCount: skipped > 0 ? skipped : nil,
+                            why: trigger == .scheduled ? AutoSweepWhy.text(parts: parts, frequency: store.frequency, approved: false,
+                                                                           processHours: store.stopProcessesAfterHours) : nil)
+    }
+
+    /// Leftovers to stop when some were unticked in See list: the due ones minus those. Nil = all due.
+    private func processIDs(store: AutoSweepStore, skipping skips: Set<String>) async -> Set<String>? {
+        guard !skips.isEmpty, let preview = store.previewLeftoverProcesses else { return nil }
+        return Set(await preview(store.stopProcessesAfterHours).map(\.path)).subtracting(skips)
+    }
+
+    // MARK: - Preview and Ask first
+
+    /// What a run would do right now, without touching anything: the next-run preview in Settings
+    /// and the menu bar, and the list an Ask first notification asks about.
+    func previewAutoSweep(store: AutoSweepStore, scheduled: Bool, daily: Bool) async -> AutoSweepPreview {
+        var items: [AutoSweepPreview.Item] = []
+        var stamps: [String: CleanupStamp] = [:]
+
+        if scheduled && store.cachesEnabled {
+            let roots = projectRoots
+            let days = store.cachesUnusedDays
+            let found = await Task.detached(priority: .utility) { () -> ([AutoSweepPreview.Item], [String: CleanupStamp]) in
+                let candidates = Self.removingNested(Self.autoSweepCacheCandidates(roots: roots, unusedDays: days), path: \.path)
+                    .filter { !DeletionService.isProtected($0.path) }
+                let stamps = CleanupStamp.read(junk: candidates)
+                let items = candidates.map { item in
+                    let isDependency = URL(fileURLWithPath: item.path).lastPathComponent == "node_modules"
+                    let folder = Self.shortPath(URL(fileURLWithPath: item.path).deletingLastPathComponent().path)
+                    var detail = isDependency ? folder : Self.shortPath(item.path)
+                    if isDependency, let modified = item.modifiedDate {
+                        let days = max(1, Int(Date().timeIntervalSince(modified) / 86_400))
+                        detail += " · not used for \(days) days"
+                    }
+                    let name = isDependency ? URL(fileURLWithPath: folder).lastPathComponent + "/node_modules" : item.name
+                    let isDevArtifact = item.category == .devArtifacts
+                    return AutoSweepPreview.Item(kind: isDependency ? .dependency : .cache, path: item.path,
+                                                 extraPaths: item.extraPaths, name: name, bytes: item.sizeBytes,
+                                                 detail: detail,
+                                                 project: isDevArtifact ? URL(fileURLWithPath: item.path).deletingLastPathComponent().path : nil,
+                                                 modified: isDevArtifact ? item.modifiedDate : nil)
+                }
+                return (items, stamps)
+            }.value
+            items += found.0
+            stamps.merge(found.1) { a, _ in a }
+        }
+
+        if daily {
+            if store.stopProcessesEnabled, let hook = store.previewLeftoverProcesses {
+                items += await hook(store.stopProcessesAfterHours)
+            }
+            if store.expireTrashEnabled {
+                store.pruneLedger()
+                items += store.expiredLedgerEntries(olderThanDays: store.expireTrashDays).map { entry in
+                    AutoSweepPreview.Item(kind: .trash, path: entry.trashPath,
+                                          name: URL(fileURLWithPath: entry.originalPath).lastPathComponent,
+                                          bytes: entry.bytes ?? 0, ledgerEntry: entry,
+                                          detail: Self.shortPath(URL(fileURLWithPath: entry.originalPath).deletingLastPathComponent().path))
+                }
+            }
+            if store.tidyDownloadsEnabled {
+                let found = await Task.detached(priority: .utility) { () -> [(AutoSweepPreview.Item, CleanupStamp)] in
+                    // Each keeps the stamp from when its age was judged; one without a stamp is never offered.
+                    DownloadsTidier.candidates().compactMap { candidate in
+                        guard let stamp = candidate.stamp else { return nil }
+                        let item = AutoSweepPreview.Item(kind: .download, path: candidate.path,
+                                                         name: URL(fileURLWithPath: candidate.path).lastPathComponent,
+                                                         bytes: FileSizeHelper.directorySize(at: URL(fileURLWithPath: candidate.path)),
+                                                         extractedFolder: candidate.extractedFolder,
+                                                         detail: candidate.reason)
+                        return (item, stamp)
+                    }
+                }.value
+                for (item, stamp) in found {
+                    items.append(item)
+                    stamps[item.path] = stamp
+                }
+            }
+        }
+        return AutoSweepPreview(date: Date(), scheduled: scheduled, daily: daily, items: items, stamps: stamps)
+    }
+
+    /// "~/code/web" for paths in the home folder.
+    nonisolated static func shortPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+
+    /// Ask first: runs exactly what the user approved. Every file moves to the Trash only if it still
+    /// matches how it looked in the preview; anything that changed, or that a rule no longer allows,
+    /// is left alone. The Trash expiry removes only ledger entries Furl still tracks and still owns.
+    func runApprovedAutoSweep(_ approved: AutoSweepPreview, store: AutoSweepStore) async -> AutoSweepRun {
+        var parts: [AutoSweepRunPart] = []
+        var trashed: [TrashLedgerEntry] = []
+        var errors: [String] = []
+        let stamps = approved.stamps
+
+        // The ask may be days old: judge every item again by today's rules (a project used since,
+        // a rule switched off or made stricter). What no longer passes is left alone.
+        let rules = store.rules
+        let checked = await Task.detached(priority: .userInitiated) {
+            AutoSweepApproval.filter(approved, rules: rules, now: Date(), projectActivity: { Self.projectLastActivity($0) })
+        }.value
+        let preview = checked.preview
+        var skipped = checked.dropped
+
+        let cacheItems = preview.items.filter { $0.kind == .cache || $0.kind == .dependency }
+        if !cacheItems.isEmpty {
+            let items = cacheItems.filter { !DeletionService.isProtected($0.path) }
+                .map { CleanupItem(path: $0.path, allPaths: [$0.path] + $0.extraPaths) }
+            let verified = await Task.detached(priority: .userInitiated) {
+                CleanupRecheck.verify(items, stamps: stamps).verified
+            }.value
+            let result = await Self.moveToTrash(verified.flatMap(\.allPaths), expected: stamps)
+            skipped += cacheItems.count - verified.count + result.skippedPaths.count
+            parts.append(AutoSweepRunPart(rule: .caches, itemCount: result.succeededCount, bytes: result.reclaimedBytes,
+                                          detail: "Not used in \(store.cachesUnusedDays) days"))
+            trashed += Self.ledgerEntries(result)
+            errors += result.errors
+        }
+
+        let processIDs = Set(preview.items(.process).map(\.path))
+        if !processIDs.isEmpty, let hook = store.stopLeftoverProcesses,
+           let part = await hook(store.stopProcessesAfterHours, processIDs) {
+            parts.append(part)
+        }
+
+        let trashItems = preview.items(.trash).compactMap(\.ledgerEntry)
+        if !trashItems.isEmpty {
+            store.pruneLedger()
+            let tracked = Set(store.ledger.map(\.trashPath))
+            let entries = trashItems.filter { tracked.contains($0.trashPath) }
+            let outcome = await Task.detached(priority: .userInitiated) { Self.permanentlyRemove(entries) }.value
+            store.removeFromLedger(outcome.removed)
+            parts.append(AutoSweepRunPart(rule: .expireTrash, itemCount: outcome.removed.count, bytes: outcome.bytes,
+                                          detail: "In the Trash for over \(store.expireTrashDays) days"))
+            errors += outcome.errors
+            recordFreed(outcome.bytes, items: outcome.removed.count, category: .trash, promptSupport: false)
+        }
+
+        let downloads = preview.items(.download)
+        if !downloads.isEmpty {
+            // An archive whose unzipped folder is gone is the only copy now: keep it.
+            let movable = downloads.filter { $0.extractedFolder.map(Self.pathExists) ?? true }
+                .filter { !DeletionService.isProtected($0.path) }
+            let result = await Self.moveToTrash(movable.map(\.path), expected: stamps)
+            skipped += result.skippedPaths.count + downloads.count - movable.count
+            parts.append(AutoSweepRunPart(rule: .downloads, itemCount: result.succeededCount, bytes: result.reclaimedBytes,
+                                          detail: "Old installers, unfinished downloads, already-unzipped archives"))
+            trashed += Self.ledgerEntries(result)
+            errors += result.errors
+        }
+
+        noteSkippedSinceScan(skipped, in: "Auto-Sweep (Ask first)")
+        afterAutoSweep()
+        return AutoSweepRun(date: Date(), trigger: .scheduled, parts: parts, trashed: trashed, errors: errors,
+                            skippedCount: skipped > 0 ? skipped : nil,
+                            why: AutoSweepWhy.text(parts: parts, frequency: store.frequency, approved: true,
+                                                   processHours: store.stopProcessesAfterHours),
+                            approved: true)
     }
 
     /// Puts a run's items back where they were.

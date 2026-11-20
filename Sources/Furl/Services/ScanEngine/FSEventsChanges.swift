@@ -3,9 +3,16 @@ import Darwin
 import Foundation
 
 /// Directories that changed since a stored FSEvents event ID, reduced to what the incremental updater needs.
+///
+/// The stream is file-level: each event names the item that changed. An item event means its parent's
+/// listing changed, which is what a folder-level stream would have reported, so it maps to the parent —
+/// except a plain file, which is kept by path so a huge folder can re-read only that file.
 struct ChangeSet: Sendable {
     /// Directories whose direct contents changed (re-read shallowly).
     var shallow: Set<String> = []
+    /// Regular files that changed (created, removed, renamed, written, attributes). The updater re-reads
+    /// the file alone when its folder has a per-file table, and treats it as a change of its folder otherwise.
+    var files: Set<String> = []
     /// Directories whose whole subtree must be re-walked (kFSEventStreamEventFlagMustScanSubDirs).
     var deep: Set<String> = []
     /// History can't be trusted (dropped events, IDs wrapped, root/volume changed): do a full walk.
@@ -15,10 +22,11 @@ struct ChangeSet: Sendable {
     var latestEventID: UInt64 = 0
     var eventCount = 0
 
-    var isEmpty: Bool { shallow.isEmpty && deep.isEmpty && !requiresFullRescan }
+    var isEmpty: Bool { shallow.isEmpty && deep.isEmpty && files.isEmpty && !requiresFullRescan }
 
     mutating func merge(_ other: ChangeSet) {
         shallow.formUnion(other.shallow)
+        files.formUnion(other.files)
         deep.formUnion(other.deep)
         if other.requiresFullRescan {
             requiresFullRescan = true
@@ -28,7 +36,7 @@ struct ChangeSet: Sendable {
         eventCount += other.eventCount
     }
 
-    fileprivate mutating func add(path rawPath: String, flags: FSEventStreamEventFlags, id: UInt64, roots: [String]) {
+    mutating func add(path rawPath: String, flags: FSEventStreamEventFlags, id: UInt64, roots: [String]) {
         eventCount += 1
         latestEventID = max(latestEventID, id)
         let f = Int(flags)
@@ -60,8 +68,24 @@ struct ChangeSet: Sendable {
         }
         if f & kFSEventStreamEventFlagMustScanSubDirs != 0 {
             deep.insert(path)
-        } else {
+            return
+        }
+        let itemKinds = kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemIsDir
+            | kFSEventStreamEventFlagItemIsSymlink | kFSEventStreamEventFlagItemIsHardlink
+            | kFSEventStreamEventFlagItemIsLastHardlink
+        // A folder-level event (no item kind) or one about a root itself: re-read that folder.
+        if f & itemKinds == 0 || roots.contains(path) {
             shallow.insert(path)
+            return
+        }
+        // A clone shares blocks with its source, whose size then changes without an event of its own, so a
+        // cloned file is a change of its whole folder. So is anything that was or became a folder or link.
+        let notPlainFile = kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemIsSymlink
+            | kFSEventStreamEventFlagItemCloned
+        if f & kFSEventStreamEventFlagItemIsFile != 0 && f & notPlainFile == 0 {
+            files.insert(path)
+        } else {
+            shallow.insert((path as NSString).deletingLastPathComponent)
         }
     }
 }
@@ -167,7 +191,9 @@ final class FSEventsCollector: @unchecked Sendable {
             let array = unsafeBitCast(paths, to: NSArray.self)
             collector.receive(count: count, paths: array, flags: flags, ids: ids)
         }
-        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagFileEvents
+        )
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault, callback, &context, roots as CFArray, eventID, latency, flags
         ) else {

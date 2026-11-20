@@ -12,6 +12,8 @@ tldr:
 updated: 2026-11-18
 ---
 
+To uninstall a Mac app completely, drag it to the Trash, then remove its folders in `~/Library`: Application Support, Caches, Containers and Preferences.
+
 On a Mac, uninstalling usually means dragging the app to the Trash. That removes the app itself, but not the files it created while you used it. For a small utility that's a few kilobytes. For a browser, a chat app, a video editor or an IDE it can be several gigabytes, and those files stay after the app is gone.
 
 ## Where apps keep their files

@@ -112,7 +112,7 @@ final class InspectorStore: ObservableObject {
         case .worktree:
             let prior = state.selectedWorktreeIDs
             state.selectedWorktreeIDs = [item.sourceID]
-            await state.cleanSelectedWorktrees(force: false, deleteLocalBranch: false)
+            await state.cleanSelectedWorktrees()
             state.selectedWorktreeIDs = prior.subtracting([item.sourceID]).intersection(state.worktrees.map(\.id))
         case .largeFile:
             let prior = state.selectedLargeFileIDs

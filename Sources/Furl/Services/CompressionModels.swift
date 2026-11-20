@@ -26,17 +26,17 @@ enum CompressCategory: String, CaseIterable, Identifiable, Sendable, Hashable, C
     var summary: String {
         switch self {
         case .folders:
-            return "APFS transparent compression for old projects and apps you rarely open. They still open normally; macOS unpacks them as they're read."
+            return "Old projects and apps you rarely open are stored compressed. They still open normally."
         case .images:
-            return "Re-encodes with a stronger compressor. Every pixel is checked to be identical before the original is replaced."
+            return "Images saved with a stronger compressor. Every pixel is checked to be identical before the original is replaced."
         case .pdfs:
-            return "Rebuilds the file, shares repeated objects and packs pages tighter. Page count and text are checked to be identical. Signed and encrypted PDFs are left alone."
+            return "Rebuilt and packed tighter. Page count and text are checked to be identical. Signed and encrypted PDFs are left alone."
         case .jpeg:
-            return "Optimises how the image data is stored without decoding it, so quality can't drop. HEIC is left alone: there's no verified lossless path for it."
+            return "Stored more tightly without being re-encoded, so quality can't drop. HEIC photos are left alone."
         case .audio:
-            return "Converts to Apple Lossless (.m4a): the same sound, every sample checked, at about half the size. Off by default because the file type changes."
+            return "Converted to Apple Lossless: the same sound at about half the size. Off by default because the file type changes."
         case .archives:
-            return "Word, PowerPoint, Keynote and ZIP files are archives inside. Repacks them at maximum compression and shrinks the PNGs inside losslessly."
+            return "Word, PowerPoint, Keynote and ZIP files packed tighter. What's inside stays identical."
         }
     }
 
@@ -51,7 +51,7 @@ enum CompressCategory: String, CaseIterable, Identifiable, Sendable, Hashable, C
         }
     }
 
-    /// Noun used in "LZFSE · 214 folders".
+    /// Noun used in "214 folders".
     var unitName: String {
         switch self {
         case .folders: return "folders"
@@ -78,8 +78,6 @@ struct CompressOptions: Sendable, Equatable {
     var onlyUnused: Bool = true
     /// Move originals to the Trash (undoable) instead of deleting them once the copy is verified.
     var keepOriginalsInTrash: Bool = true
-    /// Removes GPS and camera EXIF data from photos. NOT lossless for metadata; pixels are still verified.
-    var stripPhotoMetadata: Bool = false
     var enabledCategories: Set<CompressCategory> = Set(CompressCategory.allCases.filter(\.enabledByDefault))
 
     var cutoffDate: Date {

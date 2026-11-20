@@ -41,9 +41,8 @@ enum InspectorSafety: Sendable, Hashable {
 
     var title: String {
         switch self {
-        case .safe: return "Safe to remove"
-        case .review: return "Check before removing"
-        case .caution: return "Be careful"
+        case .safe: return "Safe"
+        case .review, .caution: return "Check first"
         }
     }
 
@@ -112,10 +111,10 @@ extension InspectorItem {
             note = "Rated Safe: nothing you made lives here."
         case .moderate:
             safety = .review
-            note = "Rated Moderate: removing it is harmless, but rebuilding it takes time or bandwidth."
+            note = "Rated Check first: removing it is harmless, but getting it back takes time or a download."
         case .review:
             safety = .caution
-            note = "Rated Review: it may hold something you want to keep. Have a look first."
+            note = "Rated Check first: it may hold something you want to keep. Have a look first."
         }
         self.init(
             id: "junk:\(item.id)", source: .junk, sourceID: item.id,
@@ -214,7 +213,7 @@ extension InspectorItem {
         let others = group.files.filter { $0.id != file.id }
         let otherList = others.prefix(2).map { $0.path.abbreviatingHome }.joined(separator: ", ")
         let note = file.isClone
-            ? "This copy is an APFS clone, so removing it frees almost nothing."
+            ? "This copy already shares space with another, so removing it frees nothing."
             : "\(others.count) identical cop\(others.count == 1 ? "y stays" : "ies stay"). Furl never removes the last copy."
         self.init(
             id: "dup:\(file.id)", source: .duplicate, sourceID: file.id,
@@ -231,17 +230,28 @@ extension InspectorItem {
     }
 
     init(leftover item: AppDataItem, group: OrphanedAppDataGroup) {
+        // Same rating as the Leftovers list (`WhySafe.leftoverTier`).
+        let isSafe = item.isSafeToRemove
+        let rebuildable = item.rebuildsItself
+        let note: String
+        if !item.isStrongMatch {
+            note = "Matched loosely by name. It might belong to a related app that's still installed."
+        } else if isSafe {
+            note = "Matched exactly by bundle ID, and the app is gone. It only holds data the app rebuilds."
+        } else {
+            note = "Matched exactly by bundle ID, and the app is gone. It may hold your settings or documents, so have a look first."
+        }
         self.init(
             id: "leftover:\(item.id)", source: .leftover, sourceID: item.id,
             name: item.name, path: item.path, sizeBytes: item.sizeBytes,
             modifiedDate: item.modifiedDate, lastUsedDate: nil,
             kind: "App leftover · \(item.location.rawValue)",
             whyFlagged: "Belongs to \(group.displayName), which is no longer installed.",
-            safety: item.isStrongMatch ? .safe : .review,
-            safetyNote: item.isStrongMatch
-                ? "Matched exactly by bundle ID, and the app is gone."
-                : "Matched loosely by name. It might belong to a related app that's still installed.",
-            rebuild: "Recreated if you install \(group.displayName) again (your old settings won't come back).",
+            safety: isSafe ? .safe : .review,
+            safetyNote: note,
+            rebuild: rebuildable
+                ? "\(group.displayName) makes it again if you reinstall it."
+                : "Nothing. If you reinstall \(group.displayName), it starts fresh without this.",
             isPermanent: false, isOnDisk: true, canRemove: true,
             searchExtras: "\(group.displayName) \(group.appIdentifier)"
         )

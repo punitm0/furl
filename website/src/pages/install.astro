@@ -6,19 +6,21 @@ import MacDialog from "../components/install/MacDialog.astro";
 import MacSettings from "../components/install/MacSettings.astro";
 import MacContextMenu from "../components/install/MacContextMenu.astro";
 import { githubPath } from "../site.config";
+import StructuredData from "../components/StructuredData.astro";
+import { breadcrumbs, installHowTo } from "../lib/structuredData";
 
 const reportUrl = githubPath("/issues/new");
 ---
 <Base
-  title="Opening Furl the first time · Furl"
-  description="Furl is free and open source, and it isn't notarized by Apple yet. So the first time you open it, macOS asks you to approve it. It takes about a minute, once per version."
+  title="How to open Furl the first time on your Mac · Furl"
+  description="Furl isn't notarized by Apple yet, so macOS asks you to approve it the first time you open it. Here's how, step by step. It takes about a minute."
 >
   <Header />
   <main id="main" class="install-page">
     <div class="install-hero">
       <span class="install-eyebrow">INSTALL HELP</span>
       <h1>Opening Furl the first time</h1>
-      <p>Furl is free and open source, and it isn't notarized by Apple yet. So the first time you open it, macOS asks you to approve it. It takes about a minute, once per version.</p>
+      <p>Open Furl once, then click <strong>Open Anyway</strong> in System Settings → Privacy &amp; Security. macOS asks because Furl is free and open source and isn't notarized by Apple yet. It takes about a minute, once per version.</p>
     </div>
 
     <!-- Revealed by the script below; without JS both step lists show, the Sonoma one under its own label. -->
@@ -174,6 +176,7 @@ const reportUrl = githubPath("/issues/new");
     </div>
   </main>
   <Footer />
+  <StructuredData graph={[installHowTo(), breadcrumbs([{ name: "Home", path: "/" }, { name: "Opening Furl the first time", path: "/install/" }])]} />
 </Base>
 
 <script>

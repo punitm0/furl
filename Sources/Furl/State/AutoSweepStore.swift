@@ -96,6 +96,8 @@ struct AutoSweepRun: Codable, Identifiable, Hashable, Sendable {
         case manual = "Run now"
         case menuBar = "Menu bar"
         case notification = "Notification"
+        case shortcuts = "Shortcuts"
+        case overview = "Overview"
     }
 
     var id = UUID()
@@ -109,6 +111,10 @@ struct AutoSweepRun: Codable, Identifiable, Hashable, Sendable {
     /// Items left alone because they changed since the scan (History shows "N left alone: …").
     /// Optional so older history files still decode.
     var skippedCount: Int? = nil
+    /// History: which rule caused an automatic run ("Why: weekly rule …"). Nil for older runs.
+    var why: String? = nil
+    /// Ask first: the user approved this run from its notification or Review.
+    var approved: Bool? = nil
 
     /// Disk space only. Stopped processes free memory, which their part reports on its own.
     var totalBytes: Int64 { parts.filter { $0.rule != .processes }.reduce(0) { $0 + $1.bytes } }
@@ -140,7 +146,16 @@ final class AutoSweepStore: ObservableObject {
         static let showMenuBarItem = "menuBar.showItem"
         static let showFreeSpace = "menuBar.showFreeSpace"
         static let keepRunning = "menuBar.keepRunning"
+        /// Legacy on/off switch. Still written (true only for Automatic) so an older Furl never
+        /// runs an Ask first setup by itself.
         static let enabled = "autoSweep.enabled"
+        static let mode = "autoSweep.mode"
+        static let trustMigrated = "autoSweep.trustMigrated"
+        static let approvedInARow = "autoSweep.ask.approvedInARow"
+        static let offeredAutomatic = "autoSweep.ask.offeredAutomatic"
+        static let suggestionDismissed = "autoSweep.suggestion.dismissedAt"
+        static let skipNextRun = "autoSweep.skipNextRun.ids"
+        static let skipNextRunDate = "autoSweep.skipNextRun.date"
         static let cachesEnabled = "autoSweep.caches.enabled"
         static let cachesDays = "autoSweep.caches.days"
         static let frequency = "autoSweep.frequency"
@@ -165,7 +180,7 @@ final class AutoSweepStore: ObservableObject {
         static let lastRunBytes = "autoSweep.lastRunBytes"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     // MARK: Menu bar
     @Published var showMenuBarItem: Bool { didSet { defaults.set(showMenuBarItem, forKey: Keys.showMenuBarItem) } }
@@ -176,27 +191,80 @@ final class AutoSweepStore: ObservableObject {
     @Published var launchAtLoginError: String?
 
     // MARK: Auto-Sweep rules
-    @Published var autoSweepEnabled: Bool {
+    /// Off / Ask first / Automatic. Set it through `setMode` from the UI so the menu bar setting follows.
+    @Published private(set) var mode: AutoSweepMode {
         didSet {
-            defaults.set(autoSweepEnabled, forKey: Keys.enabled)
+            defaults.set(mode.rawValue, forKey: Keys.mode)
+            defaults.set(mode == .automatic, forKey: Keys.enabled)
             // Turning it on must not instantly "catch up" on a slot that passed before it was on.
-            if autoSweepEnabled && !oldValue { resetScheduleAnchor() }
+            if mode != .off && oldValue == .off { resetScheduleAnchor() }
+            if mode != .askFirst { pendingAsk = nil }
+            if mode != oldValue { invalidatePreview() }
         }
     }
-    @Published var cachesEnabled: Bool { didSet { defaults.set(cachesEnabled, forKey: Keys.cachesEnabled) } }
-    @Published var cachesUnusedDays: Int { didSet { defaults.set(cachesUnusedDays, forKey: Keys.cachesDays) } }
+    /// Ask first or Automatic: the rules run on their schedule.
+    var autoSweepEnabled: Bool { mode != .off }
+
+    /// AutoSweepTrust: picking Ask first or Automatic turns on "Keep running in menu bar" (shown as a
+    /// caption with a Change link). Open at login stays a separate choice in General.
+    func setMode(_ newMode: AutoSweepMode) {
+        if newMode != .off {
+            showMenuBarItem = true
+            keepRunningInMenuBar = true
+        }
+        mode = newMode
+    }
+
+    /// Ask first approvals in a row, and whether Automatic was offered.
+    @Published private(set) var trustLadder: AutoSweepTrustLadder {
+        didSet {
+            defaults.set(trustLadder.approvedInARow, forKey: Keys.approvedInARow)
+            defaults.set(trustLadder.offeredAutomatic, forKey: Keys.offeredAutomatic)
+        }
+    }
+
+    /// Counts an approved Ask first run. Returns true when Furl should offer Automatic now (once).
+    func recordApproval(changed: Bool) -> Bool {
+        var ladder = trustLadder
+        let offer = ladder.recordApproval(changed: changed)
+        trustLadder = ladder
+        return offer
+    }
+
+    /// The Automatic offer was shown; it isn't made again.
+    func markOfferedAutomatic() {
+        var ladder = trustLadder
+        ladder.markOffered()
+        trustLadder = ladder
+    }
+
+    /// Today's rule settings, for judging an approved ask again right before it runs.
+    var rules: AutoSweepRules {
+        AutoSweepRules(cachesEnabled: cachesEnabled, cachesUnusedDays: cachesUnusedDays,
+                       stopProcessesEnabled: stopProcessesEnabled, expireTrashEnabled: expireTrashEnabled,
+                       expireTrashDays: expireTrashDays, tidyDownloadsEnabled: tidyDownloadsEnabled)
+    }
+
+    /// Overview suggestion card: "Not now" hides it until two more manual cleans.
+    @Published var suggestionDismissedAt: Date? {
+        didSet { defaults.set(suggestionDismissedAt, forKey: Keys.suggestionDismissed) }
+    }
+    // Every rule change makes the next-run preview stale.
+    @Published var cachesEnabled: Bool { didSet { defaults.set(cachesEnabled, forKey: Keys.cachesEnabled); invalidatePreview() } }
+    @Published var cachesUnusedDays: Int { didSet { defaults.set(cachesUnusedDays, forKey: Keys.cachesDays); invalidatePreview() } }
     @Published var frequency: AutoSweepFrequency { didSet { defaults.set(frequency.rawValue, forKey: Keys.frequency); resetScheduleAnchor() } }
     /// 1 = Sunday … 7 = Saturday (Calendar's numbering).
     @Published var weekday: Int { didSet { defaults.set(weekday, forKey: Keys.weekday); resetScheduleAnchor() } }
     @Published var hour: Int { didSet { defaults.set(hour, forKey: Keys.hour); resetScheduleAnchor() } }
     @Published var minute: Int { didSet { defaults.set(minute, forKey: Keys.minute); resetScheduleAnchor() } }
-    @Published var expireTrashEnabled: Bool { didSet { defaults.set(expireTrashEnabled, forKey: Keys.trashEnabled) } }
-    @Published var expireTrashDays: Int { didSet { defaults.set(expireTrashDays, forKey: Keys.trashDays) } }
-    @Published var tidyDownloadsEnabled: Bool { didSet { defaults.set(tidyDownloadsEnabled, forKey: Keys.downloadsEnabled) } }
+    /// Permanent rule, unticked by default (see `AutoSweepMigration.expireTrash`).
+    @Published var expireTrashEnabled: Bool { didSet { defaults.set(expireTrashEnabled, forKey: Keys.trashEnabled); invalidatePreview() } }
+    @Published var expireTrashDays: Int { didSet { defaults.set(expireTrashDays, forKey: Keys.trashDays); invalidatePreview() } }
+    @Published var tidyDownloadsEnabled: Bool { didSet { defaults.set(tidyDownloadsEnabled, forKey: Keys.downloadsEnabled); invalidatePreview() } }
     @Published var compressEnabled: Bool { didSet { defaults.set(compressEnabled, forKey: Keys.compressEnabled) } }
     @Published var compressUnusedDays: Int { didSet { defaults.set(compressUnusedDays, forKey: Keys.compressDays) } }
-    @Published var stopProcessesEnabled: Bool { didSet { defaults.set(stopProcessesEnabled, forKey: Keys.processesEnabled) } }
-    @Published var stopProcessesAfterHours: Int { didSet { defaults.set(stopProcessesAfterHours, forKey: Keys.processesHours) } }
+    @Published var stopProcessesEnabled: Bool { didSet { defaults.set(stopProcessesEnabled, forKey: Keys.processesEnabled); invalidatePreview() } }
+    @Published var stopProcessesAfterHours: Int { didSet { defaults.set(stopProcessesAfterHours, forKey: Keys.processesHours); invalidatePreview() } }
     @Published var notifyAfterRun: Bool { didSet { defaults.set(notifyAfterRun, forKey: Keys.notifySummary) } }
 
     // MARK: Low disk
@@ -215,6 +283,110 @@ final class AutoSweepStore: ObservableObject {
     @Published private(set) var lastRunDate: Date?
     @Published private(set) var lastRunBytes: Int64 = 0
 
+    // MARK: Next-run preview and Ask first
+    /// What the next run would take right now (Settings › Automation and the menu bar).
+    @Published var nextRunPreview: AutoSweepPreview?
+    @Published var isPreviewing = false
+    /// Ask first: the run waiting for Clean or Review. In memory only; after a relaunch the
+    /// notification's Clean opens the list instead of acting on an old plan.
+    @Published var pendingAsk: AutoSweepPreview?
+    /// Review is working out a fresh list (Run now, or Clean on an expired ask).
+    @Published var isPreparingReview = false
+
+    /// Forgets an ask older than a day or overtaken by the next slot, so Clean can't act on it.
+    func dropExpiredAsk(now: Date = Date()) {
+        guard let ask = pendingAsk,
+              AutoSweepApproval.isExpired(ask, now: now, nextSlot: nextRun?.date) else { return }
+        pendingAsk = nil
+    }
+    /// Opens the item list sheet in Settings › Automation.
+    @Published var listRequest: AutoSweepListRequest?
+    /// Rule settings changed since `nextRunPreview` was made.
+    private(set) var previewIsStale = true
+
+    func invalidatePreview() {
+        previewIsStale = true
+    }
+
+    /// When Settings or the menu bar appears: reused for an hour unless a rule changed.
+    func previewNeedsRefresh(now: Date = Date()) -> Bool {
+        guard autoSweepEnabled else { return false }
+        guard let preview = nextRunPreview, !previewIsStale else { return true }
+        return now.timeIntervalSince(preview.date) > 3600
+    }
+
+    /// On the background tick: only shortly before the next slot, so the menu bar is current
+    /// then without a full rescan every hour.
+    func previewDueBeforeSlot(now: Date = Date()) -> Bool {
+        guard autoSweepEnabled, let next = nextRun else { return false }
+        let untilSlot = next.date.timeIntervalSince(now)
+        guard untilSlot > 0, untilSlot <= 3600 else { return false }
+        guard let preview = nextRunPreview, !previewIsStale else { return true }
+        return next.date.timeIntervalSince(preview.date) > 3600
+    }
+
+    func setPreview(_ preview: AutoSweepPreview?) {
+        nextRunPreview = preview
+        previewIsStale = false
+    }
+
+    // MARK: See list: items skipped on the next run only
+
+    /// Item ids (paths, or process ids) unticked in See list, and the run they apply to.
+    var skippedForNextRun: Set<String> {
+        Set(defaults.stringArray(forKey: Keys.skipNextRun) ?? [])
+    }
+
+    func setSkippedForNextRun(_ ids: Set<String>, runDate: Date?) {
+        if ids.isEmpty || runDate == nil {
+            defaults.removeObject(forKey: Keys.skipNextRun)
+            defaults.removeObject(forKey: Keys.skipNextRunDate)
+        } else {
+            defaults.set(Array(ids).sorted(), forKey: Keys.skipNextRun)
+            defaults.set(runDate, forKey: Keys.skipNextRunDate)
+        }
+        objectWillChange.send()
+    }
+
+    /// The skips for a run starting now, then forgets them. A run before the one they were set for
+    /// (a daily chore before Sunday's caches run, say) gets none and leaves them in place.
+    func takeSkips(now: Date = Date()) -> Set<String> {
+        guard let date = defaults.object(forKey: Keys.skipNextRunDate) as? Date,
+              now >= date.addingTimeInterval(-60) else { return [] }
+        let ids = skippedForNextRun
+        setSkippedForNextRun([], runDate: nil)
+        return ids
+    }
+
+    /// "Don’t do this again" on a History row: unticks the rules that caused that run.
+    func turnOffRules(of run: AutoSweepRun) {
+        for part in run.parts where part.itemCount > 0 {
+            switch part.rule {
+            case .caches: cachesEnabled = false
+            case .expireTrash: expireTrashEnabled = false
+            case .downloads: tidyDownloadsEnabled = false
+            case .compress: compressEnabled = false
+            case .processes: stopProcessesEnabled = false
+            case .safeClean: break
+            }
+        }
+    }
+
+    /// Whether any rule of this run is still ticked (the History link only shows then).
+    func hasRulesOn(of run: AutoSweepRun) -> Bool {
+        run.parts.contains { part in
+            guard part.itemCount > 0 else { return false }
+            switch part.rule {
+            case .caches: return cachesEnabled
+            case .expireTrash: return expireTrashEnabled
+            case .downloads: return tidyDownloadsEnabled
+            case .compress: return compressEnabled
+            case .processes: return stopProcessesEnabled
+            case .safeClean: return false
+            }
+        }
+    }
+
     var lastScheduledRun: Date? { defaults.object(forKey: Keys.lastScheduledRun) as? Date }
     var lastDailyRun: Date? { defaults.object(forKey: Keys.lastDailyRun) as? Date }
     private var scheduleAnchor: Date { defaults.object(forKey: Keys.scheduleAnchor) as? Date ?? Date() }
@@ -223,9 +395,12 @@ final class AutoSweepStore: ObservableObject {
 
     /// Stops dev servers left behind by closed AI-agent sessions that have been idle for at least `hours`.
     /// Return what was stopped (bytes = RAM freed). When nil, the rule is hidden.
-    var stopLeftoverProcesses: (@MainActor (_ idleHours: Int) async -> AutoSweepRunPart?)? {
+    /// `onlyIDs`: Ask first, stop only these (nil = every leftover that's due).
+    var stopLeftoverProcesses: (@MainActor (_ idleHours: Int, _ onlyIDs: Set<String>?) async -> AutoSweepRunPart?)? {
         didSet { objectWillChange.send() }
     }
+    /// What `stopLeftoverProcesses` would stop now, without stopping anything.
+    var previewLeftoverProcesses: (@MainActor (_ idleHours: Int) async -> [AutoSweepPreview.Item])?
     /// Losslessly compresses folders not opened for `days`. When nil, the rule is hidden.
     var compressColdFolders: (@MainActor (_ unusedDays: Int) async -> AutoSweepRunPart?)? {
         didSet { objectWillChange.send() }
@@ -237,22 +412,26 @@ final class AutoSweepStore: ObservableObject {
 
     // MARK: - Init
 
-    init() {
-        let d = UserDefaults.standard
+    init(defaults d: UserDefaults = .standard) {
+        defaults = d
         func bool(_ key: String, _ fallback: Bool) -> Bool { d.object(forKey: key) == nil ? fallback : d.bool(forKey: key) }
         func int(_ key: String, _ fallback: Int) -> Int { d.object(forKey: key) == nil ? fallback : d.integer(forKey: key) }
 
         showMenuBarItem = bool(Keys.showMenuBarItem, true)
         showFreeSpaceInMenuBar = bool(Keys.showFreeSpace, true)
         keepRunningInMenuBar = bool(Keys.keepRunning, false)
-        autoSweepEnabled = bool(Keys.enabled, false)
+        let migrated = Self.migrateTrustSettings(d)
+        mode = migrated.mode
+        trustLadder = AutoSweepTrustLadder(approvedInARow: int(Keys.approvedInARow, 0),
+                                           offeredAutomatic: bool(Keys.offeredAutomatic, false))
+        suggestionDismissedAt = d.object(forKey: Keys.suggestionDismissed) as? Date
         cachesEnabled = bool(Keys.cachesEnabled, true)
         cachesUnusedDays = int(Keys.cachesDays, 30)
         frequency = AutoSweepFrequency(rawValue: d.string(forKey: Keys.frequency) ?? "") ?? .weekly
         weekday = int(Keys.weekday, 1)
         hour = int(Keys.hour, 9)
         minute = int(Keys.minute, 0)
-        expireTrashEnabled = bool(Keys.trashEnabled, true)
+        expireTrashEnabled = migrated.expireTrash
         expireTrashDays = int(Keys.trashDays, 30)
         tidyDownloadsEnabled = bool(Keys.downloadsEnabled, false)
         compressEnabled = bool(Keys.compressEnabled, false)
@@ -269,6 +448,25 @@ final class AutoSweepStore: ObservableObject {
         history = Self.load([AutoSweepRun].self, from: Self.historyURL) ?? []
         ledger = Self.load([TrashLedgerEntry].self, from: Self.ledgerURL) ?? []
         pruneLedger()
+    }
+
+    /// The trust-ladder settings from saved ones: mode from the old on/off switch, and the Permanent
+    /// Trash rule (see `AutoSweepMigration`). The result is saved once, so a later change of
+    /// defaults can't flip anyone's choice.
+    static func migrateTrustSettings(_ d: UserDefaults) -> (mode: AutoSweepMode, expireTrash: Bool) {
+        let legacyEnabled: Bool? = d.object(forKey: Keys.enabled) == nil ? nil : d.bool(forKey: Keys.enabled)
+        let storedTrash: Bool? = d.object(forKey: Keys.trashEnabled) == nil ? nil : d.bool(forKey: Keys.trashEnabled)
+        let mode = AutoSweepMigration.mode(stored: d.string(forKey: Keys.mode), legacyEnabled: legacyEnabled)
+        let expireTrash = AutoSweepMigration.expireTrash(stored: storedTrash, legacyEnabled: legacyEnabled)
+        if !d.bool(forKey: Keys.trustMigrated) {
+            d.set(mode.rawValue, forKey: Keys.mode)
+            d.set(expireTrash, forKey: Keys.trashEnabled)
+            d.set(true, forKey: Keys.trustMigrated)
+        } else if d.string(forKey: Keys.mode) != mode.rawValue {
+            // Turned off by an older build after a downgrade: keep it off from now on.
+            d.set(mode.rawValue, forKey: Keys.mode)
+        }
+        return (mode, expireTrash)
     }
 
     // MARK: - Schedule
@@ -321,14 +519,38 @@ final class AutoSweepStore: ObservableObject {
 
     private func resetScheduleAnchor() {
         defaults.set(Date(), forKey: Keys.scheduleAnchor)
+        invalidatePreview()
     }
 
     /// "next Sunday 9:00" style text for the menu bar and Settings.
     var nextRunDescription: String? {
-        guard autoSweepEnabled else { return nil }
-        let dates = [cachesEnabled ? nextScheduledRun : nil, hasDailyRules ? nextDailyRun : nil].compactMap { $0 }
-        guard let next = dates.min() else { return nil }
+        guard autoSweepEnabled, let next = nextRun?.date else { return nil }
         return Self.relativeDay(next)
+    }
+
+    /// When the next run is due and which rules it runs (both when they fall on the same minute).
+    var nextRun: (date: Date, scheduled: Bool, daily: Bool)? {
+        guard autoSweepEnabled else { return nil }
+        let scheduled = cachesEnabled ? nextScheduledRun : nil
+        let daily = hasDailyRules ? nextDailyRun : nil
+        guard let next = [scheduled, daily].compactMap({ $0 }).min() else { return nil }
+        func same(_ date: Date?) -> Bool { date.map { abs($0.timeIntervalSince(next)) < 60 } ?? false }
+        return (next, same(scheduled), same(daily))
+    }
+
+    /// "Sunday at 9:00", "today at 9:00" (Settings next-run card).
+    static func dayAndTime(_ date: Date) -> String {
+        "\(dayName(date)) at \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    /// "Sunday", "today", "tomorrow" (menu bar card: "Auto-Sweep Sunday").
+    static func dayName(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "today" }
+        if cal.isDateInTomorrow(date) { return "tomorrow" }
+        let days = abs(cal.dateComponents([.day], from: Date(), to: date).day ?? 99)
+        if days < 7 { return date.formatted(.dateTime.weekday(.wide)) }
+        return date.formatted(.dateTime.day().month(.abbreviated))
     }
 
     static func relativeDay(_ date: Date) -> String {
@@ -484,6 +706,13 @@ final class AutoSweepStore: ObservableObject {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
     }
+}
+
+/// Settings › Automation item list. `review` lets the user untick items and approve the rest.
+enum AutoSweepListRequest: Hashable, Identifiable {
+    case seeList
+    case review
+    var id: Self { self }
 }
 
 // MARK: - Menu bar extension point

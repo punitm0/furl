@@ -142,6 +142,9 @@ struct ShrinkOptions: Sendable, Equatable {
 
     var videoPreset: ShrinkVideoPreset = .highest
 
+    /// Removes where and with what each photo was taken (GPS, camera and lens). Off by default.
+    var stripPhotoMetadata = false
+
     /// Detected at scan time.
     var tools: ShrinkTools = .none
 
@@ -160,7 +163,7 @@ struct ShrinkOptions: Sendable, Equatable {
 
     /// The settings that change what an encode produces (used to tell when an estimate or preview is stale).
     var encodeSignature: String {
-        "\(imageQuality)|\(imageFormat.rawValue)|\(maxImageDimension ?? 0)|\(videoPreset.rawValue)|\(tools.pngquant != nil)|\(tools.mozjpeg != nil)"
+        "\(imageQuality)|\(imageFormat.rawValue)|\(maxImageDimension ?? 0)|\(videoPreset.rawValue)|\(stripPhotoMetadata)|\(tools.pngquant != nil)|\(tools.mozjpeg != nil)"
     }
 }
 
@@ -240,9 +243,20 @@ struct ShrinkQuality: Sendable, Hashable {
         }
     }
 
-    var detail: String {
-        guard let psnr else { return "" }
-        return psnr.isInfinite ? "identical pixels" : String(format: "%.1f dB PSNR", psnr)
+    /// What sits behind "How ▸" in the preview: the measured number, what it means, and how the file was encoded.
+    func howText(note: String) -> String {
+        var parts: [String] = []
+        if let psnr {
+            if psnr.isInfinite {
+                parts.append("The pixels are identical to the original.")
+            } else {
+                parts.append(String(format: "Measured at %.1f dB (PSNR).", psnr))
+                parts.append("Above 40 dB most people can’t tell the two apart.")
+            }
+        }
+        // Notes read like "HEIC at 72% quality" or "Images re-saved as JPEG at 70%…"; shown as one sentence.
+        if !note.isEmpty { parts.append(note.prefix(1).uppercased() + note.dropFirst() + ".") }
+        return parts.joined(separator: " ")
     }
 
     /// 0…1 for a meter.
@@ -307,8 +321,13 @@ struct ShrinkRunResult: Sendable {
     var startedAt = Date()
     var finishedAt = Date()
     var wasCancelled = false
+    /// "Also remove photo location and camera details" was on for this run.
+    var removedPhotoDetails = false
 
     var savedBytes: Int64 { items.reduce(0) { $0 + $1.savedBytes } }
+    /// Photos replaced by a shrunk copy, and so stripped when `removedPhotoDetails` is on.
+    var shrunkPhotoCount: Int { items.filter { $0.kind == .photos && $0.status == .shrunk }.count }
+    var unshrunkPhotoCount: Int { items.filter { $0.kind == .photos && $0.status != .shrunk }.count }
     var originalBytesOfShrunk: Int64 { items.filter { $0.status == .shrunk }.reduce(0) { $0 + $1.originalBytes } }
     func count(_ status: ShrinkItemStatus) -> Int { items.filter { $0.status == status }.count }
     /// Undone with the same mechanism as lossless runs: `CompressionService.undo(_:)`.

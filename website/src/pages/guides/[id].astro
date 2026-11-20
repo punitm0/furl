@@ -4,6 +4,8 @@ import Base from "../../layouts/Base.astro";
 import Header from "../../components/Header.astro";
 import Footer from "../../components/Footer.astro";
 import GuideCard from "../../components/GuideCard.astro";
+import StructuredData from "../../components/StructuredData.astro";
+import { breadcrumbs, guideArticle } from "../../lib/structuredData";
 
 export async function getStaticPaths() {
   const guides = (await getCollection("guides")).sort((a, b) => a.data.order - b.data.order);
@@ -25,7 +27,12 @@ const tldr = guide.data.tldr.map((t) => escape(t).replace(/`([^`]+)`/g, "<code>$
 const groupTitle = guide.data.audience === "developers" ? "More for developers" : "More for every Mac";
 const updated = guide.data.updated.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 ---
-<Base title={`${guide.data.title} · Furl`} description={guide.data.description} type="article">
+<Base
+  title={`${guide.data.title} · Furl`}
+  description={guide.data.metaDescription ?? guide.data.description}
+  type="article"
+  modified={guide.data.updated}
+>
   <Header />
   <main id="main" class="guide-page">
     <div class="guide-layout">
@@ -72,6 +79,16 @@ const updated = guide.data.updated.toLocaleDateString("en-GB", { day: "numeric",
     </section>
   </main>
   <Footer />
+  <StructuredData
+    graph={[
+      guideArticle({ id: guide.id, ...guide.data }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Guides", path: "/guides/" },
+        { name: guide.data.title, path: `/guides/${guide.id}/` },
+      ]),
+    ]}
+  />
 </Base>
 
 <script>

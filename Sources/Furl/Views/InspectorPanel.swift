@@ -100,23 +100,39 @@ struct InspectorPanel: View {
         }
     }
 
+    /// WhySafe board: the same three words as the lists. Permanent sits beside the level when the item skips the Trash.
     private var safetyPill: some View {
-        let (fg, bg): (Color, Color) = {
-            switch item.safety {
-            case .safe: return (Theme.safe, Theme.safeTint)
-            case .review: return (Theme.warning, Theme.warningTint)
-            case .caution: return (Theme.danger, Theme.dangerTint)
+        HStack(spacing: 6) {
+            // Something that can't use the Trash is never called Safe; Permanent says it alone.
+            if !(item.isPermanent && item.safety.tier == .safe) {
+                pill(item.safety.tier)
+            }
+            if item.isPermanent {
+                pill(.permanent)
+            }
+        }
+    }
+
+    private func pill(_ tier: RiskTier) -> some View {
+        let icon: String = {
+            switch tier {
+            case .safe: return "checkmark.shield"
+            case .checkFirst: return "eye"
+            case .permanent: return "exclamationmark.triangle"
             }
         }()
         return HStack(spacing: 6) {
-            Image(systemName: item.safety.systemImage)
-            Text(item.safety.title)
+            Image(systemName: icon)
+            Text(tier.label)
         }
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(fg)
+        .foregroundStyle(tier.foreground)
         .padding(.horizontal, 10)
         .frame(height: 26)
-        .background(bg, in: Capsule())
+        .background(tier.tint, in: Capsule())
+        .help("\(tier.label): \(tier.meaning)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tier.accessibilityLabel)
     }
 
     // MARK: Facts

@@ -1,6 +1,7 @@
 ---
 title: "Lossless vs lossy compression: what's safe to shrink"
 description: "Lossless compression makes files smaller with nothing lost. Lossy compression makes them much smaller by throwing detail away. How Furl's Compress and Shrink do each, and what lossy can cost you."
+metaDescription: "Lossless compression makes files smaller with nothing lost. Lossy throws detail away for much smaller files. How Furl's Compress and Shrink do each."
 cover: /guides/compression.svg
 order: 5
 audience: everyone
@@ -11,6 +12,8 @@ tldr:
   - "Use lossless everywhere, lossy only where good enough really is enough, and back up anything you care about."
 updated: 2026-11-18
 ---
+
+Lossless compression is safe for any file because it keeps every bit. Lossy compression saves much more space, but the detail it throws away is gone for good.
 
 Deleting isn't the only way to get space back. Many files can be made smaller instead. There are two very different ways to do it, and Furl keeps them apart: **Compress** is lossless, **Shrink** is lossy and off until you turn it on.
 

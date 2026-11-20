@@ -111,6 +111,11 @@ struct CleanupItem: Sendable {
     var requireCleanWorktree = false
     /// A Git worktree whose HEAD must still start with this commit (the scan's short hash).
     var worktreeCommit: String? = nil
+    /// "Remove anyway…": the worktree's changes must still be exactly what the confirm listed, file
+    /// by file (status and each file's fingerprint). Nothing new may be lost without being shown.
+    var expectedWorktreeChanges: WorktreeChangeSnapshot? = nil
+    /// A worktree with no branch: some branch must still contain its HEAD, so no commits are lost.
+    var requireHeadOnBranch = false
     /// Browser caches are skipped while the browser that owns them runs: cache folder dates don't
     /// change while the browser writes into their subfolders, so the stamp alone can't tell.
     var isBrowserCache = false
@@ -145,7 +150,16 @@ enum CleanupRecheck {
         if item.isBrowserCache, JunkScanner.browserIsRunning(forCachePath: item.path) { return false }
         if item.requireCleanWorktree, !worktreeIsClean(item.path) { return false }
         if let commit = item.worktreeCommit, !worktreeHead(item.path, startsWith: commit) { return false }
+        if let expected = item.expectedWorktreeChanges, WorktreeChangeSnapshot.take(in: item.path) != expected { return false }
+        if item.requireHeadOnBranch, !worktreeHeadOnBranch(item.path) { return false }
         return true
+    }
+
+    /// Some branch still contains the worktree's current HEAD.
+    static func worktreeHeadOnBranch(_ path: String) -> Bool {
+        let head = ShellRunner.git(["rev-parse", "HEAD"], in: path, timeout: 30)
+        let sha = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return head.exitCode == 0 && WorktreeScanner.branchContains(sha, in: path)
     }
 
     /// Same test the worktree scanner uses: if git can't prove it's clean, it isn't.

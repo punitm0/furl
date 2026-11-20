@@ -10,6 +10,8 @@ final class AppState: ObservableObject {
         static let projectRoots = "projectRoots"
         static let extraScanRoots = "extraScanRoots"
         static let excludedScanRoots = "excludedScanRoots"
+        /// Which screen a "Never scan" folder was added from (path → screen name), for the Settings list.
+        static let excludedScanRootSources = "excludedScanRootSources"
         static let discoveredProjectRoots = "discoveredProjectRoots"
         static let staleDays = "staleDaysThreshold"
         static let largeFileThreshold = "largeFileThresholdMB"
@@ -22,7 +24,17 @@ final class AppState: ObservableObject {
 
     private let defaults = UserDefaults.standard
 
-    @Published var selectedSection: SidebarSection = .dashboard
+    @Published var selectedSection: SidebarSection = .dashboard {
+        // Disk opens on What's big from anywhere (sidebar, ⌘4…, Storage, Overview); only the
+        // growth link opens What grew, by setting it after the section.
+        didSet { if selectedSection == .disk && oldValue != .disk { diskView = .big } }
+    }
+    /// Disk's two views; a link can open What grew directly.
+    @Published var diskView: DiskViewMode = .big
+    /// A path filter a Disk row hands to the section it opens; that section's search takes it once.
+    private var pendingHandoffFilter: (section: SidebarSection, text: String)?
+    /// Disk rows' view of the other sections' results; cleared when any of them changes.
+    fileprivate var diskFindingsCache: DiskFindings?
 
     // MARK: Persisted settings
     @Published var deletionMode: DeletionMode {
@@ -40,13 +52,24 @@ final class AppState: ObservableObject {
             if oldValue != extraScanRoots { scheduleProjectRootRescan() }
         }
     }
-    /// Settings › Scanning › "Exclude": never look for projects, worktrees or junk inside these.
+    /// Settings › Scanning › "Never scan": never look for projects, worktrees, junk, large files or
+    /// duplicates inside these. (Stored under the old "Exclude" key.)
     @Published var excludedScanRoots: [String] {
         didSet {
             defaults.set(excludedScanRoots, forKey: Keys.excludedScanRoots)
-            if oldValue != excludedScanRoots { scheduleProjectRootRescan() }
+            guard oldValue != excludedScanRoots else { return }
+            // "Don't scan here…" and its Undo update the lists themselves; a rescan would re-tick every Safe item.
+            if skipNextRootRescan { skipNextRootRescan = false } else { scheduleProjectRootRescan() }
         }
     }
+    /// "added from Caches & Junk": the screen a "Don't scan here…" came from, keyed by folder.
+    @Published var excludedScanRootSources: [String: String] {
+        didSet { defaults.set(excludedScanRootSources, forKey: Keys.excludedScanRootSources) }
+    }
+    /// The "Stop scanning …?" confirm, shown over the main window.
+    @Published var pendingNeverScan: NeverScanRequest?
+    /// Set right before a Never scan change that already updated the lists.
+    var skipNextRootRescan = false
     /// Where worktree, dev-artifact and .DS_Store scans look: discovered projects plus "Also scan".
     /// Before anything has been discovered (first launch, index unavailable) the old default folders.
     var projectRoots: [String] {
@@ -59,12 +82,21 @@ final class AppState: ObservableObject {
     @Published private(set) var hasDiscoveredProjects = false
 
     func isExcluded(_ path: String) -> Bool {
-        excludedScanRoots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+        Self.isExcluded(path, by: excludedScanRoots)
     }
     private var rootRescanTask: Task<Void, Never>?
+    /// Caches & Junk toolbar: "Dependencies count as unused after N days". Re-filters the list without a rescan.
     @Published var staleDaysThreshold: Int {
-        didSet { defaults.set(staleDaysThreshold, forKey: Keys.staleDays) }
+        didSet {
+            guard oldValue != staleDaysThreshold else { return }
+            defaults.set(staleDaysThreshold, forKey: Keys.staleDays)
+            applyStaleDaysChange()
+        }
     }
+    /// Junk found by the last scan that the current "unused after" days hide (young dependencies, recent archives).
+    var heldBackJunk: [JunkItem] = []
+    /// The days the last junk scan used; nil before the first scan finishes.
+    var junkScannedStaleDays: Int?
     @Published var largeFileThresholdMB: Int64 {
         didSet {
             defaults.set(largeFileThresholdMB, forKey: Keys.largeFileThreshold)
@@ -131,7 +163,7 @@ final class AppState: ObservableObject {
     @Published private(set) var cleanupProgress: CleanupProgressInfo?
 
     /// Scans requested while the same scan was already running; they re-run once it finishes.
-    private var pendingRescans = Set<SidebarSection>()
+    var pendingRescans = Set<SidebarSection>()
 
     @Published private(set) var hasScannedWorktrees = false
     @Published private(set) var hasScannedJunk = false
@@ -139,23 +171,44 @@ final class AppState: ObservableObject {
     @Published private(set) var hasScannedLargeFiles = false
     @Published private(set) var hasScannedDuplicates = false
 
-    @Published var worktrees: [WorktreeItem] = []
+    @Published var worktrees: [WorktreeItem] = [] { didSet { diskFindingsCache = nil } }
     @Published var selectedWorktreeIDs = Set<String>()
 
-    @Published var junkItems: [JunkItem] = []
-    @Published var selectedJunkIDs = Set<String>()
+    @Published var junkItems: [JunkItem] = [] {
+        didSet {
+            diskFindingsCache = nil
+            refreshSafeCleanupPlan()
+        }
+    }
+    @Published var selectedJunkIDs = Set<String>() {
+        didSet {
+            noteSafeCleanVetoes(removed: oldValue.subtracting(selectedJunkIDs))
+            refreshSafeCleanupPlan()
+        }
+    }
+    /// "Safe now" (GetSpaceBack board), kept up to date as junk results and ticks change so views can
+    /// read it on every redraw. See `AppState.safeCleanupPlan(junk:ticked:isProtected:isBrowserRunning:)`.
+    private(set) var safeCleanupPlan = SafeCleanupPlan()
+    /// `DeletionService.isProtected` answers, remembered per path while the plan is rebuilt per streamed batch.
+    private var protectedPathCache: [String: Bool] = [:]
+    /// Paths the user unticked while a "Clean safe items" run was checking; nil when none is running.
+    /// A rescan during the run ticks every Safe item again, so these stay out whatever the ticks say.
+    private(set) var safeCleanVetoes: Set<String>?
+    /// Set while a scan resets the junk ticks itself, so the reset isn't taken for the user unticking.
+    private var isResettingJunkTicks = false
+    private var browserObservers: [NSObjectProtocol] = []
 
     @Published var installedApps: [InstalledAppItem] = []
-    @Published var orphanedGroups: [OrphanedAppDataGroup] = []
+    @Published var orphanedGroups: [OrphanedAppDataGroup] = [] { didSet { diskFindingsCache = nil } }
 
     /// Every file found at the threshold used for the last scan; `largeFiles` is the subset above the current threshold.
-    private var allLargeFiles: [LargeFileItem] = []
+    var allLargeFiles: [LargeFileItem] = []
     private var largeFilesScannedThresholdMB: Int64?
-    @Published var largeFiles: [LargeFileItem] = []
+    @Published var largeFiles: [LargeFileItem] = [] { didSet { diskFindingsCache = nil } }
     @Published var selectedLargeFileIDs = Set<String>()
 
     // MARK: Duplicates
-    @Published var duplicateGroups: [DuplicateGroup] = []
+    @Published var duplicateGroups: [DuplicateGroup] = [] { didSet { diskFindingsCache = nil } }
     @Published var selectedDuplicateIDs = Set<String>()
     @Published private(set) var duplicateScannedCount = 0
     @Published private(set) var duplicatePhase = ""
@@ -168,6 +221,8 @@ final class AppState: ObservableObject {
     @Published private(set) var spaceScannedCount = 0
     @Published private(set) var spaceUnreadableCount = 0
     @Published private(set) var spaceMapIsStale = false
+    /// When the current map finished, for Disk's "Scanned 2 minutes ago".
+    @Published private(set) var spaceScannedAt: Date?
     /// Bumped whenever the (reference-type) tree is mutated so views redraw.
     @Published private(set) var spaceRevision = 0
     private var spaceProgress: ScanProgress?
@@ -194,20 +249,38 @@ final class AppState: ObservableObject {
         didSet {
             // Any other message replaces the "Nothing cleaned" info toast and its Rescan action.
             if statusBanner != Self.nothingCleanedText { statusRescanSections = [] }
+            bannerUndo = nil
             scheduleStatusDismiss()
         }
+    }
+    /// An Undo for the current toast that isn't a cleanup (e.g. "Furl won't scan …"). Set after `statusBanner`.
+    @Published var bannerUndo: BannerUndo? {
+        didSet { if bannerUndo != nil { scheduleStatusDismiss() } }
     }
     /// Set with the "Nothing cleaned" toast (`showNothingCleaned`): it shows an info icon instead of
     /// the check mark, and a Rescan action that rescans these sections.
     @Published private(set) var statusRescanSections: [SidebarSection] = []
     /// The menu bar's status line after "Clean safe items" left everything alone; nil otherwise.
     @Published var safeCleanNote: String?
+    /// The Overview's "You got back…" state after its one-click clean; cleared by Undo or the next full scan.
+    @Published var lastSafeClean: SafeCleanSummary?
     /// "Clean safe items" progress for the menu bar button and the main window's progress bar.
     @Published private(set) var safeCleanPhase: SafeCleanPhase?
     enum SafeCleanPhase: Equatable { case checking, cleaning }
     /// Items the latest cleanup left alone because they changed since the scan (read by the tray).
     private(set) var lastSkippedCount = 0
-    @Published var errorBanner: String?
+    @Published var errorBanner: String? {
+        didSet {
+            // Any other warning replaces the one the Rescan action belongs to.
+            if errorBanner != errorRescanText {
+                errorRescanText = nil
+                if !errorRescanSections.isEmpty { errorRescanSections = [] }
+            }
+        }
+    }
+    /// Sections the warning bar's Rescan action rescans (`showError(_:rescan:)`); empty hides it.
+    @Published private(set) var errorRescanSections: [SidebarSection] = []
+    private var errorRescanText: String?
     private var statusDismissTask: Task<Void, Never>?
 
     /// The Trash ledger (Furl's own Trash items). Set by `observeTrashForLedger(store:)`.
@@ -220,6 +293,7 @@ final class AppState: ObservableObject {
         discoveredProjectRoots = defaults.stringArray(forKey: Keys.discoveredProjectRoots) ?? []
         extraScanRoots = Self.migrateLegacyProjectRoots(defaults)
         excludedScanRoots = defaults.stringArray(forKey: Keys.excludedScanRoots) ?? []
+        excludedScanRootSources = defaults.dictionary(forKey: Keys.excludedScanRootSources) as? [String: String] ?? [:]
         let days = defaults.integer(forKey: Keys.staleDays)
         staleDaysThreshold = days > 0 ? days : 30
         let mb = Int64(defaults.integer(forKey: Keys.largeFileThreshold))
@@ -294,6 +368,51 @@ final class AppState: ObservableObject {
         return total + trashSizeBytes
     }
 
+    // MARK: - Safe now
+
+    func refreshSafeCleanupPlan() {
+        var cache = protectedPathCache
+        let plan = Self.safeCleanupPlan(
+            junk: junkItems, ticked: selectedJunkIDs,
+            isProtected: { path in
+                if let known = cache[path] { return known }
+                let answer = DeletionService.isProtected(path)
+                cache[path] = answer
+                return answer
+            },
+            isBrowserRunning: JunkScanner.browserIsRunning(forCachePath:)
+        )
+        protectedPathCache = cache
+        if plan != safeCleanupPlan { safeCleanupPlan = plan }
+    }
+
+    /// A browser opening or quitting changes which browser caches can be moved right now.
+    func observeBrowsersForSafePlan() {
+        guard browserObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            browserObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.junkItems.contains(where: { $0.category == .browserCaches }) else { return }
+                    self.refreshSafeCleanupPlan()
+                    self.objectWillChange.send()
+                }
+            })
+        }
+    }
+
+    /// Starts (`true`) or ends (`false`) collecting the paths the user unticks during a safe clean.
+    func trackSafeCleanVetoes(_ on: Bool) {
+        safeCleanVetoes = on ? [] : nil
+    }
+
+    private func noteSafeCleanVetoes(removed: Set<String>) {
+        guard safeCleanVetoes != nil, !isResettingJunkTicks, !removed.isEmpty else { return }
+        for item in junkItems where removed.contains(item.id) {
+            safeCleanVetoes?.insert(item.path)
+        }
+    }
+
     // MARK: - Disk info
 
     /// Volume info is cheap; Trash size can be large, so it is computed off the main thread.
@@ -310,6 +429,7 @@ final class AppState: ObservableObject {
     // MARK: - Scanning
 
     func scanAll() async {
+        lastSafeClean = nil
         refreshDiskInfo()
         fullScanInFlight = true
         async let wt: Void = scanWorktrees()
@@ -415,6 +535,7 @@ final class AppState: ObservableObject {
         cleanupStamps.worktreesDate = Date()
         isScanningWorktrees = false
         hasScannedWorktrees = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !worktrees.isEmpty)
+        CleanupTray.shared.reconcile(.worktrees, listed: Set(worktrees.map(\.id)), completed: !progress.isCancelled)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -432,9 +553,14 @@ final class AppState: ObservableObject {
         }
         defer { runPendingRescan(.junk) }
         isScanningJunk = true
-        let days = staleDaysThreshold
+        // Scans at the lowest toolbar choice, so lowering the days later only re-filters.
+        let days = min(staleDaysThreshold, Self.staleDaysScanFloor)
+        junkScannedStaleDays = nil
         junkItems = []
+        heldBackJunk = []
+        isResettingJunkTicks = true
         selectedJunkIDs = []
+        isResettingJunkTicks = false
         cleanupStamps.junk = [:]
         var offered = Set<String>()
         let stream: ScanStream<([JunkItem], [String: CleanupStamp])> = beginStream(
@@ -443,8 +569,12 @@ final class AppState: ObservableObject {
         ) { [weak self] batches in
             guard let self else { return }
             let known = Set(junkItems.map(\.id))
-            let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) && !isExcluded($0.path) }
+            let found = batches.flatMap(\.0).filter { !known.contains($0.id) && !isExcluded($0.path) }
             for batch in batches { cleanupStamps.junk.merge(batch.1) { _, new in new } }
+            let threshold = staleDaysThreshold
+            let relabeled = found.map { $0.relabeled(staleDays: threshold) }
+            heldBackJunk += relabeled.filter { !$0.isListed(staleDays: threshold) }
+            let fresh = relabeled.filter { $0.isListed(staleDays: threshold) }
             guard !fresh.isEmpty else { return }
             junkItems = (junkItems + fresh).sorted { $0.sizeBytes > $1.sizeBytes }
             // Safe items are checked as they arrive; a later uncheck by the user sticks.
@@ -469,11 +599,16 @@ final class AppState: ObservableObject {
             }.value
         }
         stream.flush()
+        isResettingJunkTicks = true
         selectedJunkIDs.formIntersection(junkItems.map(\.id))
+        isResettingJunkTicks = false
         endStream(.junk, stream)
+        junkScannedStaleDays = days
+        if staleDaysThreshold < days { pendingRescans.insert(.junk) }
         cleanupStamps.junkDate = Date()
         isScanningJunk = false
         hasScannedJunk = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !junkItems.isEmpty)
+        CleanupTray.shared.reconcile(.junk, listed: Set(junkItems.map(\.id)), completed: !progress.isCancelled)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -524,6 +659,12 @@ final class AppState: ObservableObject {
         isScanningApps = false
         hasScannedApps = Self.countsAsScanned(stopped: progress.isCancelled,
                                               foundAny: !installedApps.isEmpty || !orphanedGroups.isEmpty)
+        // Same keys as `TrayItem.app` and `TrayItem.leftover`.
+        CleanupTray.shared.reconcile(
+            .apps,
+            listed: Set(installedApps.map { "app:" + $0.id } + orphanedGroups.flatMap(\.items).map { "data:" + $0.id }),
+            completed: !progress.isCancelled
+        )
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -547,11 +688,11 @@ final class AppState: ObservableObject {
         ) { [weak self] batches in
             guard let self else { return }
             let known = Set(allLargeFiles.map(\.id))
-            let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) }
+            let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) && !isExcluded($0.path) }
             for batch in batches { cleanupStamps.largeFiles.merge(batch.1) { _, new in new } }
             guard !fresh.isEmpty else { return }
             allLargeFiles += fresh
-            largeFiles = allLargeFiles.filter { $0.sizeBytes >= largeFileThresholdMB * 1_000_000 }
+            largeFiles = allLargeFiles.filter { $0.sizeBytes > largeFileThresholdMB * 1_000_000 }
                 .sorted { $0.sizeBytes > $1.sizeBytes }
         }
         let progress = stream.progress
@@ -572,7 +713,7 @@ final class AppState: ObservableObject {
         endStream(.largeFiles, stream)
         largeFilesScannedThresholdMB = thresholdMB
         // The threshold may have changed while scanning; filter to whatever is current.
-        largeFiles = allLargeFiles.filter { $0.sizeBytes >= largeFileThresholdMB * 1_000_000 }
+        largeFiles = allLargeFiles.filter { $0.sizeBytes > largeFileThresholdMB * 1_000_000 }
             .sorted { $0.sizeBytes > $1.sizeBytes }
         if largeFileThresholdMB < thresholdMB {
             // The threshold was lowered while scanning; these results miss the smaller files.
@@ -581,6 +722,7 @@ final class AppState: ObservableObject {
         selectedLargeFileIDs.formIntersection(Set(largeFiles.map(\.id)))
         isScanningLargeFiles = false
         hasScannedLargeFiles = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !largeFiles.isEmpty)
+        CleanupTray.shared.reconcile(.largeFiles, listed: Set(largeFiles.map(\.id)), completed: !progress.isCancelled)
         noteScanSectionFinished()
         refreshDiskInfo()
     }
@@ -594,7 +736,7 @@ final class AppState: ObservableObject {
             return
         }
         if largeFileThresholdMB >= scanned {
-            largeFiles = allLargeFiles.filter { $0.sizeBytes >= largeFileThresholdMB * 1_000_000 }
+            largeFiles = allLargeFiles.filter { $0.sizeBytes > largeFileThresholdMB * 1_000_000 }
             selectedLargeFileIDs.formIntersection(Set(largeFiles.map(\.id)))
         } else {
             Task { await scanLargeFiles() }
@@ -619,6 +761,11 @@ final class AppState: ObservableObject {
             guard let self else { return }
             let known = Set(duplicateGroups.map(\.id))
             let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) }
+                .compactMap { group -> DuplicateGroup? in
+                    var group = group
+                    group.files.removeAll { isExcluded($0.path) }
+                    return group.files.count > 1 ? group : nil
+                }
             for batch in batches { cleanupStamps.duplicates.merge(batch.1) { _, new in new } }
             guard !fresh.isEmpty else { return }
             duplicateGroups = (duplicateGroups + fresh).sorted { $0.reclaimableBytes > $1.reclaimableBytes }
@@ -649,6 +796,7 @@ final class AppState: ObservableObject {
         let valid = Set(duplicateGroups.flatMap { $0.files.map(\.id) })
         selectedDuplicateIDs.formIntersection(valid)
         hasScannedDuplicates = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !duplicateGroups.isEmpty)
+        CleanupTray.shared.reconcile(.duplicates, listed: valid, completed: !progress.isCancelled)
         duplicateProgress = nil
         isScanningDuplicates = false
         noteScanSectionFinished()
@@ -665,7 +813,7 @@ final class AppState: ObservableObject {
             case .largeFiles: await scanLargeFiles()
             case .duplicates: await scanDuplicates()
             case .smartReview: await scanSmartReview()
-            case .dashboard, .spaceMap, .snapshots, .processes, .compress, .activity, .find: break
+            case .dashboard, .disk, .processes, .compress, .activity, .find: break
             }
         }
     }
@@ -720,7 +868,7 @@ final class AppState: ObservableObject {
         // A main-actor box: `totals` reads it and the scan sets it, both on the main actor.
         let built = MainActorBox<SpaceNode>()
         let stream: ScanStream<SpaceNode> = beginStream(
-            .spaceMap, noun: .items,
+            .disk, noun: .items,
             totals: {
                 if let built = built.value { return (built.children.filter { !$0.isAggregate }.count, built.sizeBytes) }
                 return (preview.count, preview.reduce(0) { $0 + $1.sizeBytes })
@@ -766,11 +914,12 @@ final class AppState: ObservableObject {
                 spaceCurrent = root
                 spaceUnreadableCount = progress.unreadable
                 spaceMapIsStale = false
+                spaceScannedAt = Date()
                 spaceRevision += 1
             }
         }
         poller.cancel()
-        endStream(.spaceMap, stream)
+        endStream(.disk, stream)
         if progress.isCancelled, !preview.isEmpty, !keepsOldMap {
             // Stopped mid-walk on a folder with no earlier map: the partial top level stays (leaf copies,
             // no stamps for this folder, so nothing on it can be removed), marked stale so a rescan is offered.
@@ -804,7 +953,7 @@ final class AppState: ObservableObject {
     func removeSpaceNode(_ node: SpaceNode) async {
         guard !node.isAggregate else { return }
         let result = await delete([CleanupItem(path: node.path)], stamps: cleanupStamps.spaceMap, context: "Space Map")
-        applyDeletionResult(result, label: node.name, section: .spaceMap, itemName: node.name)
+        applyDeletionResult(result, label: node.name, section: .disk, itemName: node.name)
         guard result.succeededCount > 0 else { return }
 
         // Detach and subtract its size from every ancestor.
@@ -844,7 +993,7 @@ final class AppState: ObservableObject {
         ) { [weak self] batches in
             guard let self else { return }
             let known = Set(smartItems.map(\.id))
-            let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) }
+            let fresh = batches.flatMap(\.0).filter { !known.contains($0.id) && !isExcluded($0.path) }
             for batch in batches { cleanupStamps.smartReview.merge(batch.1) { _, new in new } }
             guard !fresh.isEmpty else { return }
             smartItems = (smartItems + fresh).sorted { ($0.ruleScore, $0.sizeBytes) > ($1.ruleScore, $1.sizeBytes) }
@@ -869,6 +1018,7 @@ final class AppState: ObservableObject {
         isScanningSmart = false
         selectedSmartIDs.formIntersection(Set(smartItems.map(\.id)))
         hasScannedSmart = Self.countsAsScanned(stopped: progress.isCancelled, foundAny: !smartItems.isEmpty)
+        CleanupTray.shared.reconcile(.smartReview, listed: Set(smartItems.map(\.id)), completed: !progress.isCancelled)
 
         guard !progress.isCancelled else {
             smartProgress = nil
@@ -970,7 +1120,7 @@ final class AppState: ObservableObject {
     }
 
     func addExcludedScanRoot() {
-        for path in pickFolders(prompt: "Exclude") { addExcludedScanRoot(path: path) }
+        for path in pickFolders(prompt: "Never Scan") { addExcludedScanRoot(path: path) }
     }
 
     func addExcludedScanRoot(path: String) {
@@ -980,6 +1130,7 @@ final class AppState: ObservableObject {
 
     func removeExcludedScanRoot(_ path: String) {
         excludedScanRoots.removeAll { $0 == path }
+        excludedScanRootSources[path] = nil
     }
 
     /// One-time move from the old hand-picked "Project Scan Folders": folders outside home become
@@ -1010,12 +1161,53 @@ final class AppState: ObservableObject {
 
     // MARK: - Cleanup Actions
 
-    func cleanSelectedWorktrees(force: Bool, deleteLocalBranch: Bool) async {
-        // Dirty worktrees can only be removed with force; never send them otherwise.
-        let targets = worktrees.filter {
-            selectedWorktreeIDs.contains($0.id) && $0.mergeStatus != .main && (force || !$0.isDirty)
-        }
+    /// Removes the ticked worktrees. Never forced: a worktree with changes is left alone here (only
+    /// `removeWorktreeAnyway` removes one). Merged branches go too only when the user ticked
+    /// "Also delete the merged branches" in the confirm; unmerged branches are always kept.
+    func cleanSelectedWorktrees(deleteMergedBranches: Bool = false) async {
+        let targets = Self.bulkWorktreeTargets(worktrees, selected: selectedWorktreeIDs)
         guard !targets.isEmpty else { return }
+        // `git worktree remove` deletes for good (never the Trash), so re-check right before:
+        // the folder is unchanged since the scan, HEAD is still the scanned commit (a later
+        // `git branch -D` must never drop new commits), and it's still clean.
+        await removeWorktrees(targets.map { item in
+            var check = CleanupItem(path: item.worktreePath)
+            check.worktreeCommit = item.commitHash
+            check.requireCleanWorktree = true
+            // "Commits stay in each repository" must hold for a worktree with no branch too.
+            check.requireHeadOnBranch = item.mergeStatus == .detached
+            return (item, check)
+        }, force: false, deleteMergedBranches: deleteMergedBranches)
+    }
+
+    /// What a bulk remove takes from the ticked IDs: only bulk-selectable rows, so a worktree with
+    /// changes (or commits on no branch) is dropped even if its ID is still in the selection.
+    nonisolated static func bulkWorktreeTargets(_ worktrees: [WorktreeItem], selected: Set<String>) -> [WorktreeItem] {
+        worktrees.filter { selected.contains($0.id) && $0.isBulkSelectable }
+    }
+
+    /// What "Remove anyway…" lists; nil when git can't prove it.
+    nonisolated static func worktreeChanges(_ item: WorktreeItem) async -> WorktreeChangeSnapshot? {
+        await Task.detached(priority: .userInitiated) {
+            guard !item.isPrunable, !WorktreeScanner.isSymlink(item.worktreePath) else { return nil }
+            return WorktreeChangeSnapshot.take(in: item.worktreePath)
+        }.value
+    }
+
+    /// "Remove anyway…" on one row, after the second confirm. Right before acting it re-checks that
+    /// the folder is unchanged since the scan, HEAD is the scanned commit, and the changes are exactly
+    /// `confirmed` (what the confirm listed, file by file). The branch is always kept.
+    func removeWorktreeAnyway(_ item: WorktreeItem, confirmed: WorktreeChangeSnapshot) async {
+        guard item.canRemoveAnyway, !confirmed.status.isEmpty || item.losesCommitsIfRemoved,
+              worktrees.contains(where: { $0.id == item.id }) else { return }
+        var check = CleanupItem(path: item.worktreePath)
+        check.worktreeCommit = item.commitHash
+        check.expectedWorktreeChanges = confirmed
+        await removeWorktrees([(item, check)], force: true, deleteMergedBranches: false)
+    }
+
+    private func removeWorktrees(_ targets: [(item: WorktreeItem, check: CleanupItem)],
+                                 force: Bool, deleteMergedBranches: Bool) async {
         isCleaning = true
         defer { isCleaning = false }
 
@@ -1027,20 +1219,16 @@ final class AppState: ObservableObject {
         var errors: [String] = []
         defer { cleanupProgress = nil }
 
-        for (index, item) in targets.enumerated() {
+        for (index, target) in targets.enumerated() {
+            let item = target.item
+            let check = target.check
             cleanupProgress = CleanupProgressInfo(
                 title: "Removing worktrees", done: index, total: targets.count, current: item.branchName
             )
-            // `git worktree remove` deletes for good (never the Trash), so re-check right before:
-            // the folder is unchanged since the scan, HEAD is still the scanned commit (a later
-            // `git branch -D` must never drop new commits), and, unless the user allowed dirty
-            // worktrees, it's still clean. A prunable entry has no folder: pruning only drops metadata.
-            var check = CleanupItem(path: item.worktreePath)
-            check.worktreeCommit = item.commitHash
-            check.requireCleanWorktree = !force
+            // A missing folder has nothing to check: pruning only drops git's record of it.
             let outcome: Result<WorktreeScanner.RemovalOutcome, Error>? = await Task.detached(priority: .userInitiated) {
                 guard item.isPrunable || CleanupRecheck.passes(check, stamps: stamps) else { return nil }
-                return WorktreeScanner.removeWorktree(item: item, force: force, deleteLocalBranch: deleteLocalBranch)
+                return WorktreeScanner.removeWorktree(item: item, force: force, deleteLocalBranch: deleteMergedBranches)
             }.value
             guard let outcome else {
                 skipped += 1
@@ -1071,6 +1259,7 @@ final class AppState: ObservableObject {
             ActivityLog.shared.recordPermanent(section: .worktrees, count: removed, bytes: reclaimed,
                                                detail: "\(removed) worktree(s) removed with git worktree remove",
                                                items: removedPaths, skipped: skipped)
+            // WorktreesSimple board: "Removed 4 worktrees, freed 4.2 GB." No Undo: it can't be undone.
             statusBanner = Self.withSkipped("Removed \(removed) \(removed == 1 ? "worktree" : "worktrees"), freed \(FileSizeHelper.formatBytes(reclaimed)).", skipped)
         }
         if !errors.isEmpty {
@@ -1079,13 +1268,25 @@ final class AppState: ObservableObject {
         await scanWorktrees()
     }
 
+    /// "Clean up missing folders": tells git to forget worktrees whose folder is gone.
     func pruneAllWorktrees() async {
+        let missing = Set(worktrees.filter(\.isPrunable).map(\.worktreePath))
         let repos = worktrees.map(\.repoPath)
         await Task.detached(priority: .userInitiated) {
             WorktreeScanner.pruneStaleWorktrees(in: repos)
         }.value
-        statusBanner = "Pruned stale Git worktree metadata."
         await scanWorktrees()
+        let cleaned = missing.subtracting(worktrees.filter(\.isPrunable).map(\.worktreePath)).count
+        statusBanner = Self.missingFoldersMessage(cleaned)
+    }
+
+    /// WorktreesSimple board: "Cleaned up 1 missing folder. Git no longer lists it."
+    nonisolated static func missingFoldersMessage(_ count: Int) -> String {
+        switch count {
+        case 0: return "No missing folders to clean up."
+        case 1: return "Cleaned up 1 missing folder. Git no longer lists it."
+        default: return "Cleaned up \(count) missing folders. Git no longer lists them."
+        }
     }
 
     func cleanSelectedJunk() async {
@@ -1215,14 +1416,6 @@ final class AppState: ObservableObject {
                                   context: "Apps & Leftovers")
         applyDeletionResult(result, label: label, section: .apps)
         refreshAppsLocally()
-    }
-
-    func clearOrphanedGroup(_ group: OrphanedAppDataGroup) async {
-        await clearOrphanedItems(group.items, label: "leftover item(s) for \(group.displayName)")
-    }
-
-    func clearAllOrphanedData() async {
-        await clearOrphanedItems(orphanedGroups.flatMap(\.items), label: "orphaned data item(s)")
     }
 
     /// After removing apps or leftovers, drop what no longer exists instead of re-measuring every app.
@@ -1506,6 +1699,20 @@ final class AppState: ObservableObject {
 
     func setLastSkipped(_ count: Int) { lastSkippedCount = count }
 
+    /// A warning with a Rescan action for `sections` (none when empty).
+    func showError(_ text: String, rescan sections: [SidebarSection]) {
+        errorRescanText = sections.isEmpty ? nil : text
+        errorBanner = text
+        errorRescanSections = sections
+    }
+
+    /// The warning bar's Rescan action.
+    func rescanFromError() async {
+        let sections = errorRescanSections
+        errorBanner = nil
+        await rescan(sections)
+    }
+
     func setSafeCleanPhase(_ phase: SafeCleanPhase?) {
         safeCleanPhase = phase
         switch phase {
@@ -1520,10 +1727,14 @@ final class AppState: ObservableObject {
         let sections = statusRescanSections
         statusBanner = nil
         safeCleanNote = nil
+        await rescan(sections)
+    }
+
+    private func rescan(_ sections: [SidebarSection]) async {
         for section in sections {
             switch section {
             case .worktrees: await scanWorktrees()
-            case .spaceMap: await scanSpace()
+            case .disk: await scanSpace()
             default: await rescanAfterRestore(sections: [section])
             }
         }
@@ -1533,7 +1744,7 @@ final class AppState: ObservableObject {
         statusDismissTask?.cancel()
         guard statusBanner != nil else { return }
         // Leave more time when the banner offers Undo.
-        let seconds = lastUndo != nil ? 15 : 6
+        let seconds = lastUndo != nil || bannerUndo != nil ? 15 : 6
         statusDismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -1546,4 +1757,51 @@ final class AppState: ObservableObject {
 @MainActor
 private final class MainActorBox<Value> {
     var value: Value?
+}
+
+// MARK: - Disk hand-off
+
+enum DiskViewMode: Hashable, Sendable {
+    case big, grew
+}
+
+extension AppState {
+    /// Opens `section` with its search pre-filled, so it shows only what's under one Disk row.
+    /// The section's selection is narrowed to that folder too, so its Clean can't reach items
+    /// ticked elsewhere that the filter hides.
+    func handOff(to section: SidebarSection, filter: String?) {
+        pendingHandoffFilter = filter.map { (section, $0) }
+        if let folder = filter {
+            switch section {
+            case .junk:
+                selectedJunkIDs = DiskFindings.narrow(selectedJunkIDs, junkItems, to: folder, id: \.id, path: \.path)
+            case .worktrees:
+                selectedWorktreeIDs = DiskFindings.narrow(selectedWorktreeIDs, worktrees, to: folder, id: \.id, path: \.worktreePath)
+            case .duplicates:
+                selectedDuplicateIDs = DiskFindings.narrow(selectedDuplicateIDs, duplicateGroups.flatMap(\.files),
+                                                           to: folder, id: \.id, path: \.path)
+            case .largeFiles:
+                selectedLargeFileIDs = DiskFindings.narrow(selectedLargeFileIDs, largeFiles, to: folder, id: \.id, path: \.path)
+            default:
+                break
+            }
+        }
+        selectedSection = section
+    }
+
+    /// What the other sections found, for Disk rows. Rebuilt only after their results change,
+    /// not on every AppState change.
+    var diskFindings: DiskFindings {
+        if let cached = diskFindingsCache { return cached }
+        let built = DiskFindings(state: self)
+        diskFindingsCache = built
+        return built
+    }
+
+    /// The filter a Disk row left for `section`, once.
+    func takeHandoffFilter(for section: SidebarSection) -> String? {
+        guard let pending = pendingHandoffFilter, pending.section == section else { return nil }
+        pendingHandoffFilter = nil
+        return pending.text
+    }
 }

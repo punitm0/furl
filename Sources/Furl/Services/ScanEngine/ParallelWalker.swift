@@ -14,12 +14,27 @@ struct ParallelWalker: Sendable {
         var id: Int32
         var path: String
         var mode: DirMode
-        var existingChildren: [String: Int32]?
+        var existingChildren: [String: ExistingChild]?
+    }
+
+    /// A sub-directory the index already has. It is reused only if the folder found under that name is the
+    /// same one (same file ID): a folder deleted and re-created under its old name — Chromium resetting its
+    /// cache — is new, so its old subtree, table and kept files must not carry over.
+    struct ExistingChild: Sendable {
+        var id: Int32
+        var fileID: UInt64
     }
 
     var width: Int = ParallelWalker.defaultWidth
     var policy: WalkPolicy = .default
     var retain: RetainRule = .default
+    /// Indexed folders with at least this many files keep a per-file table (`FileIndex.denseEntries`), so a
+    /// change FSEvents names costs one stat per file instead of a re-read. A re-read costs ~50–100 µs per
+    /// file with APFS private size, so this is where one reaches ~0.3 s. Not part of the config fingerprint:
+    /// tables are rebuilt or dropped on every read of a folder.
+    var denseMinFiles = ParallelWalker.defaultDenseMinFiles
+
+    static let defaultDenseMinFiles = 4096
 
     /// Tuned on an M2 Pro (12 cores): see docs/scan-benchmarks.md.
     static let defaultWidth = 8
@@ -53,6 +68,7 @@ struct ParallelWalker: Sendable {
         let outputs = (0..<workerCount).map { _ in WorkerOutput() }
         let policy = self.policy
         let retain = self.retain
+        let denseMinFiles = self.denseMinFiles
 
         try await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -60,7 +76,7 @@ struct ParallelWalker: Sendable {
                 for output in outputs {
                     group.enter()
                     let thread = Thread {
-                        Self.workerLoop(shared: shared, output: output, policy: policy, retain: retain)
+                        Self.workerLoop(shared: shared, output: output, policy: policy, retain: retain, denseMinFiles: denseMinFiles)
                         group.leave()
                     }
                     thread.qualityOfService = .userInitiated
@@ -98,8 +114,16 @@ struct ParallelWalker: Sendable {
                 builder.dirs[Int(id)].fileID = update.fileID
             }
         }
+        // Every folder read here gets a fresh table (or none); drop the old ones first.
+        var read = Set<Int32>()
+        for output in outputs { for (id, _) in output.stats { read.insert(id) } }
+        if !builder.denseEntries.isEmpty { builder.denseEntries.removeAll { read.contains($0.dir) } }
         // Pass 2: own stats and kept files.
         for (output, base) in zip(outputs, bases) {
+            for var entry in output.dense {
+                entry.name.offset += base
+                builder.denseEntries.append(entry)
+            }
             for (id, stats) in output.stats {
                 var d = builder.dirs[Int(id)]
                 d.ownFiles = stats.files
@@ -108,9 +132,11 @@ struct ParallelWalker: Sendable {
                 d.ownReclaimable = stats.reclaimable
                 d.ownNewestModified = stats.newest
                 d.totalDirs = 0 // recounted by compact()/recomputeTotals()
+                d.foldedDirs = 0 // a deep re-read re-folds its subtree in compact()
                 var flags = d.flags
                 if stats.unreadable { flags.insert(.unreadable) } else { flags.remove(.unreadable) }
                 flags.remove(.incomplete)
+                flags.remove(.foldedIncomplete)
                 d.flags = flags
                 builder.dirs[Int(id)] = d
             }
@@ -152,13 +178,20 @@ struct ParallelWalker: Sendable {
         var refreshedDirs: [(Int32, Refresh)] = []
         var stats: [(Int32, OwnStats)] = []
         var files: [FileRecord] = []
+        var dense: [DenseEntry] = []
     }
 
-    private static func workerLoop(shared: WalkState, output: WorkerOutput, policy: WalkPolicy, retain: RetainRule) {
+    private static func workerLoop(shared: WalkState, output: WorkerOutput, policy: WalkPolicy, retain: RetainRule, denseMinFiles: Int) {
         let reader = BulkDirectoryReader()
         var pending: [PendingChild] = []
+        // Every file of the folder being read, in case it turns out to be huge (names in `candidateNames`).
+        var candidates: [DenseEntry] = []
+        var candidateNames: [UInt8] = []
         while let item = shared.next() {
             pending.removeAll(keepingCapacity: true)
+            candidates.removeAll(keepingCapacity: true)
+            candidateNames.removeAll(keepingCapacity: true)
+            var selfContained = true
             var stats = OwnStats()
             let isIndexed = item.mode == .indexed
             let parentPrefix = item.path == "/" ? "/" : item.path + "/"
@@ -171,6 +204,15 @@ struct ParallelWalker: Sendable {
                     stats.allocated += entry.displaySize
                     stats.reclaimable += entry.reclaimableSize
                     if entry.modified > stats.newest { stats.newest = entry.modified }
+                    if isIndexed && selfContained {
+                        if DenseEntry.isSelfContained(entry) {
+                            let ref = NameRef(offset: UInt32(candidateNames.count), length: UInt32(name.count))
+                            candidateNames.append(contentsOf: name)
+                            candidates.append(DenseEntry(dir: item.id, name: ref, entry: entry))
+                        } else {
+                            selfContained = false
+                        }
+                    }
                     if isIndexed && retain.keeps(entry, name: name) {
                         let ref = NameRef(offset: UInt32(output.names.count), length: UInt32(name.count))
                         output.names.append(contentsOf: name)
@@ -184,8 +226,8 @@ struct ParallelWalker: Sendable {
                     }
                 case .directory:
                     let childName = name.fileName
-                    if let existing = item.existingChildren?[childName] {
-                        output.refreshedDirs.append((existing, Refresh(modified: entry.modified, created: entry.created, fileID: entry.fileID)))
+                    if let existing = item.existingChildren?[childName], existing.fileID == entry.fileID {
+                        output.refreshedDirs.append((existing.id, Refresh(modified: entry.modified, created: entry.created, fileID: entry.fileID)))
                         return
                     }
                     let isPackage = PackageDetector.isPackage(name: name, finderFlags: entry.finderFlags)
@@ -216,6 +258,15 @@ struct ParallelWalker: Sendable {
             switch result {
             case .success(let count):
                 shared.progress?.addItems(count)
+                // A partial listing would make later deltas wrong; the folder keeps the folder read instead.
+                if selfContained && !reader.lastReadIncomplete && candidates.count >= denseMinFiles {
+                    let base = UInt32(output.names.count)
+                    output.names.append(contentsOf: candidateNames)
+                    for var entry in candidates {
+                        entry.name.offset += base
+                        output.dense.append(entry)
+                    }
+                }
             case .failure:
                 stats.unreadable = true
                 shared.progress?.addUnreadable()
@@ -232,7 +283,7 @@ struct ParallelWalker: Sendable {
             var id: Int32
             var path: String
             var mode: DirMode
-            var existingChildren: [String: Int32]?
+            var existingChildren: [String: ExistingChild]?
         }
 
         private let condition = NSCondition()

@@ -3,8 +3,10 @@ import Foundation
 /// Sidebar groups, in display order. A group is only shown when it has at least one section.
 enum SidebarGroup: String, CaseIterable, Identifiable, Sendable {
     case overview = "Overview"
-    case cleanUp = "Clean Up"
-    case optimize = "Optimize"
+    /// SimplerNav: everything that frees disk space, Compress included.
+    case freeUpSpace = "Free up space"
+    /// SimplerNav: frees memory and ports, not disk.
+    case runningNow = "Running now"
     case explore = "Explore"
 
     var id: String { rawValue }
@@ -28,19 +30,39 @@ enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
     case apps = "Apps & Leftovers"
     case compress = "Compress"
     case processes = "Processes & Sessions"
-    case spaceMap = "Space Map"
-    case snapshots = "Snapshots"
+    /// What's big and What grew (was Space Map and Snapshots).
+    case disk = "Disk"
     case activity = "History"
     case find = "Find"
 
     var id: String { rawValue }
 
+    /// Also reads names saved before Space Map and Snapshots became Disk (History entries), so
+    /// they still resolve, to Disk.
+    init?(rawValue: String) {
+        switch rawValue {
+        case "Overview": self = .dashboard
+        case "Smart Review": self = .smartReview
+        case "Caches & Junk": self = .junk
+        case "Git Worktrees": self = .worktrees
+        case "Duplicates": self = .duplicates
+        case "Large Files": self = .largeFiles
+        case "Apps & Leftovers": self = .apps
+        case "Compress": self = .compress
+        case "Processes & Sessions": self = .processes
+        case "Disk", "Space Map", "Snapshots": self = .disk
+        case "History": self = .activity
+        case "Find": self = .find
+        default: return nil
+        }
+    }
+
     var group: SidebarGroup {
         switch self {
         case .dashboard: return .overview
-        case .smartReview, .junk, .worktrees, .duplicates, .largeFiles, .apps: return .cleanUp
-        case .processes, .compress: return .optimize
-        case .spaceMap, .snapshots, .activity, .find: return .explore
+        case .smartReview, .junk, .worktrees, .duplicates, .largeFiles, .apps, .compress: return .freeUpSpace
+        case .processes: return .runningNow
+        case .disk, .activity, .find: return .explore
         }
     }
 
@@ -51,8 +73,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
         case .junk: return "square.3.layers.3d"
         case .apps: return "app.dashed"
         case .largeFiles: return "doc"
-        case .spaceMap: return "square.split.bottomrightquarter"
-        case .snapshots: return "chart.line.uptrend.xyaxis"
+        case .disk: return "internaldrive"
         case .activity: return "clock.arrow.circlepath"
         case .duplicates: return "doc.on.doc"
         case .smartReview: return "sparkles"
@@ -138,10 +159,98 @@ struct WorktreeItem: Identifiable, Hashable, Sendable {
     let sizeBytes: Int64
     /// Branch tip is identical to the base branch tip: it's "merged" only because no work was committed yet.
     var pointsAtBaseTip: Bool = false
+    /// Files in `git status --porcelain --untracked-files=all` when the scan ran; nil when git couldn't
+    /// prove anything (then `isDirty` is true and Furl never offers "Remove anyway…", since it can't
+    /// list what would be lost).
+    var changedFileCount: Int? = 0
+    /// No branch (`.detached`) only: a branch contains HEAD, so removing it loses no commits.
+    var headOnBranch: Bool = true
 
     var canAutoSelect: Bool {
         mergeStatus.isSafeToClean && !isDirty && !isLocked && mergeStatus != .main && !pointsAtBaseTip
     }
+
+    /// Commits made here would be lost: it isn't on a branch and no branch contains its HEAD.
+    var losesCommitsIfRemoved: Bool {
+        mergeStatus == .detached && !headOnBranch && !isPrunable
+    }
+
+    /// Can be ticked for a bulk remove. A worktree with changes, or whose commits are on no branch,
+    /// never can: only its own "Remove anyway…" removes it, after a second confirm (WorktreesSimple).
+    var isBulkSelectable: Bool {
+        mergeStatus != .main && !isDirty && !losesCommitsIfRemoved
+    }
+
+    /// Offered "Remove anyway…": has changes Furl could list, or commits on no branch. Never the main
+    /// worktree, a missing folder or a locked one (git refuses to remove those).
+    var canRemoveAnyway: Bool {
+        guard mergeStatus != .main, !isPrunable, !isLocked else { return false }
+        if isDirty { return (changedFileCount ?? 0) > 0 }
+        return losesCommitsIfRemoved
+    }
+
+    /// Its branch would go with "Also delete the merged branches". Unmerged branches are always kept.
+    var hasDeletableMergedBranch: Bool {
+        mergeStatus.isSafeToClean && branchName != "HEAD" && branchName != baseBranch
+    }
+}
+
+/// One file in `git status --porcelain -z`, for the "Lose N changed files?" confirm.
+struct WorktreeChange: Hashable, Sendable {
+    enum Kind: String, Sendable { case changed, new, deleted, renamed }
+    let path: String
+    let kind: Kind
+
+    /// Parses porcelain v1 `-z` output: NUL-separated "XY path" entries; a rename or copy is followed
+    /// by its original path as one more entry. Names are taken verbatim (no quoting, no " -> ").
+    static func parse(_ porcelain: String) -> [WorktreeChange] {
+        var entries = porcelain.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
+        var changes: [WorktreeChange] = []
+        while let raw = entries.next() {
+            let entry = String(raw)
+            guard entry.count > 3 else { continue }
+            let code = String(entry.prefix(2))
+            let path = String(entry.dropFirst(3))
+            let kind: Kind
+            if code.contains("R") || code.contains("C") {
+                kind = .renamed
+                _ = entries.next()
+            } else if code == "??" || code.contains("A") {
+                kind = .new
+            } else if code.contains("D") {
+                kind = .deleted
+            } else {
+                kind = .changed
+            }
+            changes.append(WorktreeChange(path: path, kind: kind))
+        }
+        return changes
+    }
+
+    /// Paths from a crafted repo may hold control or bidirectional characters that change how the
+    /// confirm reads. Shown as visible \u{…} escapes instead.
+    static func displaySafe(_ text: String) -> String {
+        var out = ""
+        for scalar in text.unicodeScalars {
+            let category = scalar.properties.generalCategory
+            if category == .control || category == .format || category == .lineSeparator
+                || category == .paragraphSeparator || category == .privateUse || category == .unassigned {
+                out += "\\u{" + String(scalar.value, radix: 16, uppercase: true) + "}"
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+}
+
+/// What "Remove anyway…" showed: the exact status, plus each listed file's type, size and date.
+/// Removal goes ahead only if a fresh snapshot is identical, so nothing unseen is lost.
+struct WorktreeChangeSnapshot: Sendable, Equatable {
+    let status: String
+    let fingerprints: [String: String]
+
+    var changes: [WorktreeChange] { WorktreeChange.parse(status) }
 }
 
 // MARK: - Junk & Caches
@@ -192,7 +301,7 @@ struct JunkItem: Identifiable, Hashable, Sendable {
     let risk: RiskLevel
     let sizeBytes: Int64
     let modifiedDate: Date?
-    let reason: String
+    var reason: String
     /// Set for items cleaned by running a tool (docker, simctl) instead of moving `path` to the Trash.
     /// `path` is then a stable pseudo-path (e.g. "docker://build-cache") that doesn't exist on disk.
     /// Use `JunkScanner.clean(_:mode:progress:)` to clean a mix of both kinds.
@@ -201,6 +310,28 @@ struct JunkItem: Identifiable, Hashable, Sendable {
     var extraPaths: [String] = []
     /// When the item was last used, if the tool records it (Ollama, simulator runtimes).
     var lastUsedDate: Date? = nil
+    /// Listed only once untouched for the "Dependencies count as unused after" days (small dependency
+    /// folders, archives in Downloads). The scan finds them at a lower floor so the toolbar can re-filter.
+    var listedOnlyWhenUnused = false
+    /// For project build folders: the project's name, so the reason can follow the "unused after" days.
+    var projectName: String? = nil
+
+    /// The same item with its reason judged against `staleDays` ("Unused for 41 days in web"), not the scan's floor.
+    func relabeled(staleDays: Int, now: Date = Date()) -> JunkItem {
+        guard let projectName else { return self }
+        let days = modifiedDate.map { Calendar.current.dateComponents([.day], from: $0, to: now).day ?? 0 } ?? 0
+        var item = self
+        item.reason = JunkScanner.devArtifactReason(daysOld: days, staleDays: staleDays, projectName: projectName)
+        return item
+    }
+
+    /// Whether the list shows this item when dependencies count as unused after `staleDays` days.
+    func isListed(staleDays: Int, now: Date = Date()) -> Bool {
+        guard listedOnlyWhenUnused else { return true }
+        guard let modifiedDate else { return true }
+        let days = Calendar.current.dateComponents([.day], from: modifiedDate, to: now).day ?? 0
+        return days >= staleDays
+    }
 
     /// Cleaning can't be undone: the tool deletes it directly, it never goes to the Trash.
     var isPermanent: Bool { command != nil }
@@ -229,6 +360,17 @@ struct AppDataItem: Identifiable, Hashable, Sendable {
     let modifiedDate: Date?
     /// Exact bundle-ID / app-name match. Looser matches (e.g. a sibling app's prefs) aren't preselected.
     var isStrongMatch: Bool = true
+
+    /// Caches, window state and logs: the app makes them again. Settings and app data don't come back.
+    var rebuildsItself: Bool {
+        switch location {
+        case .caches, .savedState, .logs, .webKit, .httpStorages: return true
+        case .applicationSupport, .preferences, .containers, .groupContainers: return false
+        }
+    }
+
+    /// Rated Safe only when it's an exact match and only holds data the app rebuilds.
+    var isSafeToRemove: Bool { isStrongMatch && rebuildsItself }
 }
 
 struct InstalledAppItem: Identifiable, Hashable, Sendable {
@@ -265,6 +407,19 @@ struct OrphanedAppDataGroup: Identifiable, Hashable, Sendable {
 
     var latestModified: Date? {
         items.compactMap(\.modifiedDate).max()
+    }
+
+    /// Every folder matched the removed app's ID exactly. Otherwise the group is Furl's best guess,
+    /// shows "Possible match" and is never ticked for the user.
+    var isSureMatch: Bool {
+        !items.isEmpty && items.allSatisfy(\.isStrongMatch)
+    }
+
+    /// "Sketch3" for a sure match; the raw ID for a guess, so the user sees what was matched.
+    var shownName: String {
+        guard isSureMatch else { return appIdentifier }
+        if let cut = displayName.range(of: " (") { return String(displayName[..<cut.lowerBound]) }
+        return displayName
     }
 }
 

@@ -7,10 +7,17 @@ enum ProcessesIntegration {
 
     static func connect(to autoSweep: AutoSweepStore) {
         autoSweep.menuBarProviders = [provider]
-        autoSweep.stopLeftoverProcesses = { idleHours in
+        autoSweep.previewLeftoverProcesses = { idleHours in
+            await ProcessesStore.shared.leftoversDue(orphanedForAtLeast: idleHours).map {
+                AutoSweepPreview.Item(kind: .process, path: $0.id, name: $0.displayName,
+                                      bytes: Int64(clamping: $0.memoryBytes),
+                                      detail: $0.cwd.map(AppState.shortPath) ?? $0.agentName)
+            }
+        }
+        autoSweep.stopLeftoverProcesses = { idleHours, onlyIDs in
             // The Auto-Sweep run records these in its History; don't log them twice in Activity.
             ActivityLog.shared.suppressProcessStops = true
-            let outcome = await ProcessesStore.shared.stopLeftovers(orphanedForAtLeast: idleHours)
+            let outcome = await ProcessesStore.shared.stopLeftovers(orphanedForAtLeast: idleHours, onlyIDs: onlyIDs)
             ActivityLog.shared.suppressProcessStops = false
             guard outcome.count > 0 else { return nil }
             return AutoSweepRunPart(

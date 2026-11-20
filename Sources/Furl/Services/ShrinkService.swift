@@ -276,6 +276,7 @@ enum ShrinkService {
 
     static func run(_ candidates: [ShrinkCandidate], options: ShrinkOptions, progress: CompressProgress?) async -> ShrinkRunResult {
         var result = ShrinkRunResult(startedAt: Date())
+        result.removedPhotoDetails = options.stripPhotoMetadata
         progress?.setTotal(candidates.count)
         progress?.setPhase("Checking which files are in use")
         let openFiles = CompressionFS.openFiles()

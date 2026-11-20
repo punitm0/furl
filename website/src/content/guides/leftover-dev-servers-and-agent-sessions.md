@@ -1,6 +1,7 @@
 ---
 title: "Leftover dev servers and agent sessions eating your memory"
 description: "Forgotten dev servers, watchers and idle AI-agent sessions quietly hold gigabytes of memory. How to see what they cost, and how to clear them without breaking anything."
+metaDescription: "Forgotten dev servers, watchers and idle AI-agent sessions quietly hold gigabytes of memory. How to see what they cost and clear them without breaking anything."
 cover: /guides/dev-sessions.svg
 order: 10
 audience: developers
@@ -11,6 +12,8 @@ tldr:
   - "Stop the parent with a plain `kill`. Most agents can resume a session later, so ending an idle one usually costs little."
 updated: 2026-11-18
 ---
+
+Leftover dev servers, file watchers and idle coding-agent sessions can hold several gigabytes of memory between them. Sort Activity Monitor by memory to find them, and stop each one with a plain `kill`.
 
 If your Mac feels slow and the fans spin up even though you "closed everything", look at memory, not disk. A day of work with coding agents can leave a dozen processes behind: a Vite server here, a `tsc --watch` there, a Python worker, two language servers, and three agent sessions you meant to come back to. Each one only holds a few hundred megabytes, but together they can take several gigabytes.
 

@@ -32,9 +32,9 @@ enum CompressionEngines {
         case .folders:
             return compressFolder(candidate.path, workDir: workDir, isApp: candidate.isApp, progress: progress)
         case .images:
-            return optimizeImage(candidate.path, workDir: workDir, tools: tools, strip: options.stripPhotoMetadata)
+            return optimizeImage(candidate.path, workDir: workDir, tools: tools)
         case .jpeg:
-            return optimizeJPEG(candidate.path, workDir: workDir, tools: tools, strip: options.stripPhotoMetadata)
+            return optimizeJPEG(candidate.path, workDir: workDir, tools: tools)
         case .pdfs:
             return optimizePDF(candidate.path, workDir: workDir, tools: tools)
         case .audio:
@@ -111,7 +111,8 @@ enum CompressionEngines {
 
     // MARK: - PNG / GIF / TIFF
 
-    static func optimizeImage(_ path: String, workDir: String, tools: CompressTools, strip: Bool) -> CompressEngineResult {
+    /// Lossless keeps every metadata chunk: removing photo details belongs to Shrink, which already rewrites photos.
+    static func optimizeImage(_ path: String, workDir: String, tools: CompressTools) -> CompressEngineResult {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               CGImageSourceGetStatus(source) == .statusComplete else {
@@ -126,26 +127,22 @@ enum CompressionEngines {
             guard frames == 1 else { return .skip("Animated PNG") }
             if let oxipng = tools.oxipng {
                 let out = outputPath(workDir, for: path, suffix: ".oxipng")
-                var args = ["-o", "4", "-q", "--out", out]
-                if strip { args += ["--strip", "safe"] }
-                args.append(path)
+                let args = ["-o", "4", "-q", "--out", out, path]
                 if ShellRunner.run(oxipng, arguments: args, timeout: 600).exitCode == 0 { outputs.append((out, "oxipng")) }
             }
             if let zopfli = tools.zopflipng {
                 let out = outputPath(workDir, for: path, suffix: ".zopfli")
-                let keep = strip
-                    ? "iCCP,sRGB,gAMA,cHRM,pHYs,sBIT"
-                    : "tEXt,zTXt,iTXt,gAMA,cHRM,iCCP,sRGB,pHYs,sBIT,bKGD,hIST,sPLT,tIME,eXIf"
+                let keep = "tEXt,zTXt,iTXt,gAMA,cHRM,iCCP,sRGB,pHYs,sBIT,bKGD,hIST,sPLT,tIME,eXIf"
                 let r = ShellRunner.run(zopfli, arguments: ["-y", "--keepchunks=\(keep)", path, out], timeout: 900)
                 if r.exitCode == 0 { outputs.append((out, "Zopfli")) }
             }
             let out = outputPath(workDir, for: path, suffix: ".imageio")
-            if reencodeWithImageIO(source: source, to: out, type: UTType.png, strip: strip, tiffLZW: false) {
+            if reencodeWithImageIO(source: source, to: out, type: UTType.png, tiffLZW: false) {
                 outputs.append((out, "ImageIO"))
             }
         case "tif", "tiff":
             let out = outputPath(workDir, for: path, suffix: ".imageio")
-            if reencodeWithImageIO(source: source, to: out, type: UTType.tiff, strip: strip, tiffLZW: true) {
+            if reencodeWithImageIO(source: source, to: out, type: UTType.tiff, tiffLZW: true) {
                 outputs.append((out, "LZW"))
             }
         case "gif":
@@ -176,7 +173,7 @@ enum CompressionEngines {
         return .notSmaller("Already as small as it gets")
     }
 
-    private static func reencodeWithImageIO(source: CGImageSource, to out: String, type: UTType, strip: Bool, tiffLZW: Bool) -> Bool {
+    private static func reencodeWithImageIO(source: CGImageSource, to out: String, type: UTType, tiffLZW: Bool) -> Bool {
         let count = CGImageSourceGetCount(source)
         guard let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: out) as CFURL, type.identifier as CFString, count, nil) else {
             return false
@@ -189,12 +186,6 @@ enum CompressionEngines {
             if type == .png {
                 props[kCGImagePropertyPNGDictionary] = [kCGImagePropertyPNGCompressionFilter: 0x00F8] // all filters
             }
-            if strip {
-                props[kCGImagePropertyGPSDictionary] = kCFNull
-                props[kCGImagePropertyExifDictionary] = kCFNull
-                props[kCGImagePropertyExifAuxDictionary] = kCFNull
-                props[kCGImagePropertyMakerAppleDictionary] = kCFNull
-            }
             CGImageDestinationAddImageFromSource(dest, source, index, props as CFDictionary)
         }
         return CGImageDestinationFinalize(dest)
@@ -202,13 +193,12 @@ enum CompressionEngines {
 
     // MARK: - JPEG
 
-    static func optimizeJPEG(_ path: String, workDir: String, tools: CompressTools, strip: Bool) -> CompressEngineResult {
+    static func optimizeJPEG(_ path: String, workDir: String, tools: CompressTools) -> CompressEngineResult {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         if ext == "heic" || ext == "heif" { return .skip("HEIC has no verified lossless optimiser") }
         guard let jpegtran = tools.jpegtran else { return .skip("Needs jpegtran (brew install jpeg-turbo)") }
         let out = outputPath(workDir, for: path, suffix: ".jpegtran")
-        let copy = strip ? "icc" : "all"
-        let result = ShellRunner.run(jpegtran, arguments: ["-copy", copy, "-optimize", "-progressive", "-outfile", out, path], timeout: 300)
+        let result = ShellRunner.run(jpegtran, arguments: ["-copy", "all", "-optimize", "-progressive", "-outfile", out, path], timeout: 300)
         guard result.exitCode == 0 else { return .fail("jpegtran: \(result.stderr.prefix(120))") }
         return pickSmallestVerified(original: path, outputs: [(out, "jpegtran")])
     }
@@ -301,7 +291,7 @@ enum CompressionEngines {
             guard let st = CompressionFS.lstatInfo(inner), CompressionFS.isRegular(st), st.st_size > 4_096 else { continue }
             let work = (imageWork as NSString).appendingPathComponent(UUID().uuidString)
             try? fm.createDirectory(atPath: work, withIntermediateDirectories: true)
-            if case .ready(let output, _, _) = optimizeImage(inner, workDir: work, tools: tools, strip: false) {
+            if case .ready(let output, _, _) = optimizeImage(inner, workDir: work, tools: tools) {
                 let saved = (originalsOfImages as NSString).appendingPathComponent(name)
                 try? fm.createDirectory(atPath: (saved as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
                 do {

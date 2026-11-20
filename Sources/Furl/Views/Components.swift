@@ -79,7 +79,8 @@ extension View {
     }
 
     /// Standard Reveal / Open / Copy Path context menu for any row representing a file system path.
-    func pathContextMenu(_ path: String, allowOpen: Bool = true) -> some View {
+    /// `dontScan` adds "Don't scan here…" (SettingsMoved board), which asks before skipping the folder.
+    func pathContextMenu(_ path: String, allowOpen: Bool = true, dontScan: (() -> Void)? = nil) -> some View {
         contextMenu {
             Button {
                 InspectorStore.shared.show(path: path, state: AppServices.state)
@@ -104,6 +105,12 @@ extension View {
                 DeletionService.copyPath(path)
             } label: {
                 Label("Copy Path", systemImage: "doc.on.doc")
+            }
+            if let dontScan {
+                Divider()
+                Button(action: dontScan) {
+                    Label("Don’t scan here…", systemImage: "eye.slash")
+                }
             }
         }
     }
@@ -251,6 +258,8 @@ struct EmptyStatePlaceholder: View {
     let title: String
     let message: String
     var buttonTitle: String? = nil
+    /// Primary by default; WorktreesSimple's "Open Scanning Settings" is secondary.
+    var buttonKind: SweepButtonStyle.Kind = .primary
     var action: (() -> Void)? = nil
 
     var body: some View {
@@ -272,7 +281,7 @@ struct EmptyStatePlaceholder: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let buttonTitle, let action {
                 Button(buttonTitle, action: action)
-                    .buttonStyle(SweepButtonStyle(kind: .primary))
+                    .buttonStyle(SweepButtonStyle(kind: buttonKind))
                     .padding(.top, 4)
             }
         }
@@ -344,6 +353,13 @@ struct ScanningMark: View {
 /// Bottom bar summarising the current selection with the primary action.
 /// The action keeps the `.destructive` role and ⌘⌫, but is drawn in Sweep green: in the
 /// default mode items go to the Trash and can be undone.
+/// "N selected items aren't shown": ticked items the current filter hides still get cleaned,
+/// so the bottom bar and the confirm say so.
+func hiddenSelectionNote(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return "\(count) selected item\(count == 1 ? " isn't" : "s aren't") shown"
+}
+
 struct SelectionActionBar: View {
     let selectedCount: Int
     let totalCount: Int

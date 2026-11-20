@@ -152,7 +152,9 @@ enum SnapshotBuilder {
             } else if id > 0, let c = SnapshotCategory.nameRules[index.dirName(Int32(id))] {
                 cat[id] = c.rawValue
             }
-            totals[Int(cat[id])] += d.ownAllocated
+            // A size-only folder's own stats are only its direct files (its sub-folders are hidden records
+            // that `dirs` doesn't list), so count its whole total here.
+            totals[Int(cat[id])] += d.mode == .sizeOnly ? d.totalAllocated : d.ownAllocated
 
             guard d.mode != .skipped else { continue }
             let level = Int(depth[id])

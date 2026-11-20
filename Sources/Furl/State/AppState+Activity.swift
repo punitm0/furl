@@ -11,8 +11,8 @@ extension AppState {
             case .largeFiles: await scanLargeFiles()
             case .duplicates: await scanDuplicates()
             case .smartReview: await scanSmartReview()
-            case .spaceMap: markSpaceMapStale()
-            case .dashboard, .worktrees, .processes, .compress, .snapshots, .activity, .find: break
+            case .disk: markSpaceMapStale()
+            case .dashboard, .worktrees, .processes, .compress, .activity, .find: break
             }
         }
     }

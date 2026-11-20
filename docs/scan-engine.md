@@ -17,7 +17,7 @@ Source: `Sources/Furl/Services/ScanEngine/`
 | `ParallelWalker.swift` | Bounded-width parallel walk into an `IndexBuilder` |
 | `FileIndex.swift` | Records, the immutable `FileIndex`, queries, `IndexVisitor`, `IndexBuilder` (compact/totals) |
 | `IndexStore.swift` | Compact binary persistence in `~/Library/Application Support/Furl/ScanIndex/` |
-| `FSEventsChanges.swift` | `ChangeSet`, `FSEventsHistory` (replay since an event ID), `FSEventsCollector` (live) |
+| `FSEventsChanges.swift` | `ChangeSet`, `FSEventsHistory` (replay since an event ID), `FSEventsCollector` (live); file-level events |
 | `ScanEngine.swift` | Facade: full build, load + incremental patch + save |
 | `SpotlightFastPath.swift` | Instant, approximate "files > N MB" and last-used dates from Spotlight |
 | `ScanIndexCache.swift` | Phase 2: app-wide coalesced home index (`ScanIndexCache`), `ScanIndexContext` task-local, scanner query helpers |
@@ -37,9 +37,11 @@ Source: `Sources/Furl/Services/ScanEngine/`
    for the same disk/metadata cache), and Smart Review / Space Map walk home again.
 4. **Compact index.** Parent-pointer tree (paths are interned; built on demand), plain-old-data records, names
    in one byte buffer. Only files ≥ 32 KB (configurable) are kept individually; every byte still counts in
-   folder totals. Size-only folders (`node_modules`, `.git`, packages…) keep one record.
+   folder totals. Size-only folders (`node_modules`, `.git`, packages…) show as one record; internally they
+   keep two levels of hidden sub-folder records so changes inside them patch cheaply (see below).
 5. **Incremental.** The index stores the FSEvents event ID taken *before* the walk. Next time, history since
-   that ID tells us which directories changed; only those are re-read.
+   that ID tells us which directories changed; only those are re-read. Huge flat folders (browser caches)
+   keep a per-file table, so only the files that changed are re-read (see "Huge flat folders" below).
 
 ## Accuracy (unchanged from `FileSizeHelper`)
 
@@ -128,8 +130,50 @@ index.accept([visitorA, visitorB])              // IndexVisitor plug-ins: one pa
   more than `maxIncrementalDirectories` (20 000) folders to patch; history replay timeout.
 - Otherwise each changed path maps to: an **indexed** folder → shallow re-read (files replaced, existing
   sub-folders keep their subtrees, new sub-folders are walked, vanished ones dropped); `MustScanSubDirs` →
-  deep re-walk of that folder; a path **inside a size-only folder** → that folder is re-sized; a path not in
-  the index → shallow re-read of the nearest known ancestor (discovers the new folder).
+  deep re-walk of that folder; a path **inside a size-only folder** → see below; a path not in the index →
+  shallow re-read of the nearest known ancestor (discovers the new folder).
+- **Size-only folders keep hidden sub-folder records.** `IndexBuilder.compact` keeps every sub-folder of a
+  size-only folder down to `IndexBuilder.sizeOnlyKeptDepth` (2) levels below it, e.g. `.git` → `objects` →
+  `ab`. The level-2 record is a leaf: its whole subtree folds into its own stats (and its folder count into
+  `DirRecord.foldedDirs`, an unreadable folder below it into `.foldedIncomplete`), the way the size-only
+  folder itself used to fold. Levels 0 and 1 hold only their direct files; their kept children carry the
+  rest, so every visible total and flag is the same as when the whole folder was folded.
+  - These records live in `FileIndex.hiddenDirs` (ids after `dirs`), saved as their own block by
+    `IndexStore` (format 2). `dirs` and every query (`children(ofDir:)`, `files(inDir:)`, `dirID(forPath:)`,
+    `directories(named:)`, `accept`, Space Map, Junk, Worktrees, project discovery…) never see them; only
+    the incremental updater uses `record(_:)` / `allChildren(ofDir:)` / `dirCount`.
+  - Change at a level-0/1 record → shallow re-read of that folder (new sub-folders walked, vanished ones
+    dropped, pruning re-applied). Change at or below a level-2 leaf → deep re-size of just that leaf.
+    `MustScanSubDirs` on a size-only folder → deep re-walk of it, re-pruned to two levels.
+- **Huge flat folders keep a per-file table.** The stream is file-level
+  (`kFSEventStreamCreateFlagFileEvents`): each event names the item that changed. An item event maps to its
+  parent folder, which is exactly what a folder-level stream reported, so every rule above is unchanged —
+  except a plain file event, which `ChangeSet.files` keeps by path. An indexed folder with at least
+  `ParallelWalker.denseMinFiles` (4 096) files keeps one `DenseEntry` per file, however small (name, link
+  count, logical / allocated / APFS private size, modified), in `FileIndex.denseEntries` (format 3 in
+  `IndexStore`). A file event in such a folder re-reads just that file (`BulkDirectoryReader.readItem`, same
+  attributes as a folder read), updates the table and the kept file records, and re-adds the folder's own
+  stats from the table — the same sums a read computes, so totals stay exact. Every other read of the folder
+  (shallow, deep, full walk) rebuilds or drops its table.
+  - Only folders whose files are all **self-contained** get a table: link count 1 and private size equal to
+    allocated size (or no private size, on non-APFS volumes). Deleting a hard link or a clone changes the
+    *other* file's reclaimable size without an event naming it; such folders keep the folder read.
+  - Falls back to a read of the whole folder (which also drops the table if it no longer qualifies) when a
+    re-read file is hard-linked, shares blocks, is unreadable, has become a folder, or resolves under a
+    different spelling (case- or normalization-insensitive match, e.g. `f_3` after a rename to `F_3`); when
+    the event says `ItemCloned`, or the item is or was a folder or symlink (those map to the parent anyway);
+    and when more than max(256, entries / 16) files changed, because a bulk read is ~100× cheaper per file
+    than single stats. A listing that failed partway never gets a table.
+  - File events are grouped by folder and each folder is resolved once; the `maxIncrementalDirectories` cap
+    is checked while resolving (100 k file events in 1 000 folders: 0.65 s including the patch).
+  - Cost: 48 bytes per file in memory and on disk, plus the name (on `~`: 329 k entries, 42 → 65 MB on
+    disk). Not part of the config fingerprint.
+- A shallow re-read reuses an existing sub-folder record only when the folder found under that name has the
+  same file ID. A folder deleted and re-created under its old name (Chromium resets its cache by renaming
+  `Cache_Data` away, deleting it and creating a new one) is new: its old subtree, table and kept files go.
+- `builtAt` is the date of the last **full** walk; incremental and unchanged saves keep it, so the
+  7-day `maxIndexAge` rebuild happens even when the user scans every day, and heals any drift patches
+  can't see (see the remaining gaps under Known gap 6).
 - Real paths from FSEvents (`/private/var/...`) are mapped back to the root's spelling.
 - The new event ID saved is the one taken *before* replaying, so changes made during the patch are replayed
   again next time (re-reads are idempotent).
@@ -165,10 +209,9 @@ C API (what `NSMetadataQuery` wraps) so it runs off the main thread without a ru
 
 ### Known gaps / follow-ups
 
-1. **Size-only folders re-size completely on any change.** On a busy machine the home incremental took
-   13–20 s, almost all re-sizing `.git` folders of repos being committed to. Fix: keep sub-folder records 2
-   levels deep inside size-only folders (≈ +50 % dir records) so a change in `.git/objects/ab` re-reads
-   only that folder.
+1. ~~**Size-only folders re-size completely on any change.**~~ Done: size-only folders keep two levels of
+   hidden sub-folder records (see "Incremental details"), so a change in `.git/objects/ab` re-sizes only
+   `ab`. Numbers in scan-benchmarks.md ("Hidden sub-folder records in size-only folders").
 2. **Space Map can no longer drill into `node_modules`, `.git`, `.venv`, … in home** — they are leaf
    folders with correct sizes (packages already were). Scanning that folder directly via "Analyze
    folder…" still works (it falls back to the walk since the path isn't an indexed folder).
@@ -179,6 +222,15 @@ C API (what `NSMetadataQuery` wraps) so it runs off the main thread without a ru
 4. `WorktreeScanner` still runs `git commit-tree` for squash detection, which writes a dangling commit
    object into the user's repo on every scan; see recommendation 4 below.
 5. Cold-cache numbers are still missing (needs `sudo purge`).
+6. ~~**Huge flat cache folders dominate the home incremental**~~ Done: file-level FSEvents and a per-file
+   table for folders with ≥ 4 096 files (see "Incremental details"), so a change in
+   `~/Library/Application Support/Claude/Cache/Cache_Data` (~85 k entries) or Chrome's `Cache_Data` (~65 k)
+   re-reads the named files instead of the folder; sizes stay exact. Numbers in scan-benchmarks.md ("Huge
+   flat folders"). Rejected: treating `Cache_Data`/`Code Cache`/`GPUCache` as size-only and re-sizing them
+   less often (stale, name-based), and reusing cached private sizes for unchanged entries of a cheap
+   re-read without private size (still 0.3–2 s per folder, and a clone's source changes size unseen).
+   Remaining gaps, as before this change: a hard link or clone *created elsewhere* of a file in an indexed
+   folder changes that file's reclaimable size without an event for its folder.
 
 ## Phase 2 migration plan (original; kept for reference)
 
@@ -254,7 +306,8 @@ Recommendations:
   no per-file String). This changes the config fingerprint, so the first scan after updating rebuilds the
   saved index once.
 - `AppState.projectRoots` is now computed: discovered roots + Settings › Scanning › "Also scan", minus
-  "Exclude" (results inside excluded folders are dropped too). Before the first discovery it falls back to
+  "Never scan" (results inside those folders are dropped too, including Large Files, Duplicates, Smart
+  Review and Auto-Sweep; the list was called "Exclude" and keeps its `excludedScanRoots` key). Before the first discovery it falls back to
   `WorktreeScanner.defaultSearchRoots()`. The old `projectRoots` default is migrated once: folders outside
   home → "Also scan", folders inside home dropped (discovery covers them).
 

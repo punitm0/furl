@@ -18,6 +18,7 @@ interface Props {
 const { title, description, eyebrow, heading, intro, updated, toc } = Astro.props;
 ---
 <Base title={title} description={description}>
+  <slot name="head" slot="head" />
   <Header />
   <main id="main" class="doc-page privacy-page legal-page">
     <nav class="doc-toc" aria-label="On this page" data-toc>

@@ -32,6 +32,12 @@ struct DuplicatesView: View {
         selectedFiles.reduce(0) { $0 + $1.size }
     }
 
+    /// Ticked copies in groups the search hides; Remove still removes them.
+    private var hiddenSelectedCount: Int {
+        let shown = Set(filteredGroups.flatMap { $0.files.map(\.id) })
+        return selectedFiles.filter { !shown.contains($0.file.id) }.count
+    }
+
     private var groupsWithEveryCopySelected: Int {
         state.duplicateGroups.filter { group in
             group.files.allSatisfy { state.selectedDuplicateIDs.contains($0.id) }
@@ -44,7 +50,7 @@ struct DuplicatesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScreenHeader(title: "Duplicates", subtitle: "Identical files. Keep one copy and clear the rest; APFS clones free nothing.") {
+            ScreenHeader(title: "Duplicates", subtitle: "Identical files. Keep one copy and clear the rest. Some copies already share space; removing them frees nothing.") {
                 HeaderSearchField(text: $vm.searchText, prompt: "Filter by file name or path")
             }
             toolbarBar
@@ -82,15 +88,21 @@ struct DuplicatesView: View {
                 ) {
                     Task { await state.scanDuplicates() }
                 }
+            } else if state.duplicateGroups.isEmpty {
+                // DiskScreen: a section with nothing to do says so quietly (the sidebar shows "—").
+                QuietEmptyState(systemImage: "checkmark.circle", title: "No duplicates",
+                                message: "Furl checks again on every scan. Nothing to do here.")
             } else if filteredGroups.isEmpty {
                 EmptyStatePlaceholder(
                     systemImage: "checkmark.seal",
-                    title: state.duplicateGroups.isEmpty ? "No Duplicates" : "No Matches",
-                    message: state.duplicateGroups.isEmpty
-                        ? "No duplicate files over \(FileSizeHelper.formatBytes(state.duplicateMinimumBytes)) were found in the scanned folders."
-                        : "Try a different search."
+                    title: "No Matches",
+                    message: "Try a different search."
                 )
             } else {
+                // WhySafe board: the legend line sits at the top of the list. Spare copies are all Check first.
+                RiskLegend(tiers: [.checkFirst])
+                    .padding(.horizontal, Theme.Space.page)
+                    .padding(.top, 14)
                 List {
                     ForEach(filteredGroups) { group in
                         groupSection(group)
@@ -106,6 +118,7 @@ struct DuplicatesView: View {
                     actionTitle: state.deletionMode == .moveToTrash ? "Move to Trash" : "Delete",
                     actionKind: state.deletionMode == .permanent ? .danger : .primary,
                     isBusy: state.isCleaning || state.isScanningDuplicates,
+                    note: hiddenSelectionNote(hiddenSelectedCount),
                     onAddToTray: {
                         let ids = Set(selectedFiles.map(\.file.id))
                         CleanupTray.shared.add(state.duplicateGroups.flatMap { group in
@@ -119,6 +132,8 @@ struct DuplicatesView: View {
             }
         }
         .navigationTitle("Duplicates")
+        // A Disk row's Clean / Review / Pick files opens this section filtered to its folder.
+        .onAppear { if let filter = state.takeHandoffFilter(for: .duplicates) { vm.searchText = filter } }
         .cleanSlateScreen()
         .confirmationDialog(
             "Remove \(selectedFiles.count) duplicate file\(selectedFiles.count == 1 ? "" : "s")?",
@@ -140,6 +155,9 @@ struct DuplicatesView: View {
             : "The selected copies will be permanently deleted."
         if groupsWithEveryCopySelected > 0 {
             text += "\n\nEvery copy is selected in \(groupsWithEveryCopySelected) group\(groupsWithEveryCopySelected == 1 ? "" : "s"); Furl will keep the oldest copy of each."
+        }
+        if let hidden = hiddenSelectionNote(hiddenSelectedCount) {
+            text += "\n\n\(hidden), but \(hiddenSelectedCount == 1 ? "it's" : "they're") included."
         }
         return text
     }
@@ -264,7 +282,7 @@ struct DuplicatesView: View {
     }
 
     private func fileRow(_ file: DuplicateFile, in group: DuplicateGroup) -> some View {
-        let isOldest = DuplicateKeepRule.oldest.keeper(in: group.files)?.id == file.id
+        let tier = WhySafe.duplicateTier(file, in: group)
         return HStack(spacing: 12) {
             SelectionCheckbox(id: file.id, selection: $state.selectedDuplicateIDs)
 
@@ -282,11 +300,8 @@ struct DuplicatesView: View {
                             .foregroundStyle(Theme.ink)
                             .lineLimit(1)
                     }
-                    if isOldest {
-                        BadgeView(text: "Oldest", color: Theme.memory, help: "Probably the original copy")
-                    }
                     if file.isClone {
-                        BadgeView(text: "Clone", color: Theme.inkSecondary, help: "This copy shares its storage with another file (APFS clone), so removing it frees almost nothing.")
+                        BadgeView(text: "Clone", color: Theme.inkSecondary, help: "This copy already shares space with another, so removing it frees nothing.")
                     }
                 }
                 if let date = file.modifiedDate {
@@ -297,12 +312,26 @@ struct DuplicatesView: View {
                 }
             }
             Spacer()
+            HStack(spacing: 6) {
+                if let tier {
+                    RiskChip(tier: tier)
+                } else {
+                    // WhySafe board: the copy Furl keeps reads as plain secondary text, not a chip.
+                    Text("Oldest")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.inkSecondary)
+                        .help("Probably the original. If you tick every copy, Furl keeps this one.")
+                }
+                WhyButton(explanation: WhySafe.duplicate(file, in: group, deletionMode: state.deletionMode))
+            }
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             DeletionService.revealInFinder(file.path)
         }
-        .pathContextMenu(file.path)
+        .pathContextMenu(file.path, dontScan: state.neverScanFolder(forFile: file.path).map { folder in
+            { state.requestNeverScan(folder: folder, from: .duplicates) }
+        })
     }
 }

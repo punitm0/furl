@@ -63,6 +63,9 @@ final class BulkDirectoryReader {
 
     private let bufferSize: Int
     private let buffer: UnsafeMutableRawPointer
+    /// True when the last `read` returned entries but a later `getattrlistbulk` call failed, so the listing is
+    /// partial. Callers count what they got (as before) but must not treat it as the whole folder.
+    private(set) var lastReadIncomplete = false
     /// Volumes (st_dev) that rejected FSOPT_ATTR_CMN_EXTENDED; we stop asking them for private sizes.
     private var volumesWithoutExtended = Set<dev_t>()
 
@@ -93,6 +96,7 @@ final class BulkDirectoryReader {
     }
 
     func read(fd: Int32, _ body: (inout BulkEntry, UnsafeRawBufferPointer) -> Void) -> Result<Int, ReadError> {
+        lastReadIncomplete = false
         var st = stat()
         let device: dev_t = fstat(fd, &st) == 0 ? st.st_dev : 0
         var useExtended = Self.requestPrivateSize && !volumesWithoutExtended.contains(device)
@@ -120,6 +124,7 @@ final class BulkDirectoryReader {
                     continue
                 }
                 if err == EINTR { continue }
+                if total > 0 { lastReadIncomplete = true }
                 return total > 0 ? .success(total) : .failure(.read(err))
             }
             first = false
@@ -135,6 +140,63 @@ final class BulkDirectoryReader {
             total += Int(count)
         }
         return .success(total)
+    }
+
+    enum StatResult {
+        /// The path names a file, directory, symlink or other object; `entry` has the same attributes a
+        /// directory read returns.
+        case found(BulkEntry)
+        case missing
+        /// The path resolved to an item stored under a different name: a case-insensitive (or
+        /// normalization-insensitive) match, e.g. "f_3" after f_3 was renamed to "F_3".
+        case differentName
+        case failed(Int32)
+    }
+
+    /// Reads one item's attributes exactly as `read(path:)` would report it inside its folder (symlinks are
+    /// not followed). Used to apply file-level FSEvents to huge folders without re-reading them.
+    func readItem(path: String) -> StatResult {
+        // Type first: file attributes are only valid for regular files. If the item is swapped for another
+        // kind between the two calls, getattrlist fails and the caller falls back to a folder read.
+        var st = Darwin.stat()
+        if lstat(path, &st) != 0 {
+            let err = errno
+            return err == ENOENT || err == ENOTDIR ? .missing : .failed(err)
+        }
+        switch st.st_mode & S_IFMT {
+        case S_IFREG: break
+        case S_IFDIR: return .found(BulkEntry(kind: .directory))
+        case S_IFLNK: return .found(BulkEntry(kind: .symlink))
+        default: return .found(BulkEntry(kind: .other))
+        }
+        var attrs = attrlist()
+        attrs.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        // ATTR_CMN_ERROR is only valid for getattrlistbulk.
+        attrs.commonattr = Self.commonAttrs & ~UInt32(ATTR_CMN_ERROR)
+        attrs.fileattr = Self.fileAttrs
+        var useExtended = Self.requestPrivateSize
+        while true {
+            attrs.forkattr = useExtended ? Self.extendedAttrs : 0
+            let options = UInt32(FSOPT_NOFOLLOW) | UInt32(useExtended ? FSOPT_ATTR_CMN_EXTENDED : 0)
+            if getattrlist(path, &attrs, buffer, bufferSize, options) != 0 {
+                let err = errno
+                if err == ENOENT || err == ENOTDIR { return .missing }
+                if err == EINTR { continue }
+                if useExtended && (err == EINVAL || err == ENOTSUP) { useExtended = false; continue }
+                return .failed(err)
+            }
+            var found: BulkEntry?
+            var sameName = false
+            let wanted = Array((path as NSString).lastPathComponent.utf8)
+            let length = Int(UnsafeRawPointer(buffer).loadUnaligned(as: UInt32.self))
+            guard length > 0, length <= bufferSize else { return .failed(EINVAL) }
+            Self.parse(entryAt: UnsafeRawPointer(buffer), length: length) { entry, name in
+                found = entry
+                sameName = name.count == wanted.count && wanted.withUnsafeBytes { memcmp($0.baseAddress, name.baseAddress, name.count) == 0 }
+            }
+            guard let found, found.kind == .file else { return .failed(EINVAL) }
+            return sameName ? .found(found) : .differentName
+        }
     }
 
     /// Attribute layout (getattrlist(2)): u_int32 length, attribute_set_t returned, then ATTR_CMN_ERROR if

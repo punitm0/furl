@@ -123,9 +123,9 @@ struct ActivityView: View {
                         .padding(.top, 12)
                         .padding(.bottom, 4)
                     ForEach(days[day] ?? []) { row in
-                        ActivityRow(row: row, isBusy: log.isUndoing || state.isCleaning) {
-                            Task { await undo(row) }
-                        }
+                        ActivityRow(row: row, isBusy: log.isUndoing || state.isCleaning,
+                                    onUndo: { Task { await undo(row) } },
+                                    onTurnOff: turnOffAction(row))
                         Divider().overlay(Theme.hairline)
                     }
                 }
@@ -140,6 +140,13 @@ struct ActivityView: View {
         if cal.isDateInToday(day) { return "Today" }
         if cal.isDateInYesterday(day) { return "Yesterday" }
         return day.formatted(.dateTime.weekday(.wide).day().month(.wide))
+    }
+
+    /// AutoSweepTrust History: "Don’t do this again" unticks the rule behind an Auto-Sweep run.
+    private func turnOffAction(_ row: ActivityRowModel) -> (() -> Void)? {
+        guard case .autoSweep(let run) = row.source, run.trigger == .scheduled,
+              autoSweep.hasRulesOn(of: run) else { return nil }
+        return { autoSweep.turnOffRules(of: run) }
     }
 
     private func undo(_ row: ActivityRowModel) async {
@@ -177,6 +184,10 @@ struct ActivityRowModel: Identifiable {
     let compress: Int64
     let permanent: Bool
     let automatic: Bool
+    /// AutoSweepTrust: each run is tagged Auto-Sweep or You.
+    let byAutoSweep: Bool
+    /// "Why: weekly rule …" under an Auto-Sweep run.
+    let why: String?
     let undone: Bool
     let canUndo: Bool
     /// Items left alone because they changed since the scan.
@@ -195,6 +206,8 @@ struct ActivityRowModel: Identifiable {
         compress = entry.compressBytes
         permanent = entry.permanentBytes > 0 && entry.trashed.isEmpty
         automatic = entry.automatic
+        byAutoSweep = false
+        why = nil
         undone = entry.undone
         self.canUndo = canUndo
         skippedCount = entry.skippedCount ?? 0
@@ -238,15 +251,22 @@ struct ActivityRowModel: Identifiable {
         date = run.date
         systemImage = run.trigger == .scheduled || run.trigger == .manual ? "clock.arrow.2.circlepath" : "sparkles"
         accent = Theme.accentTeal
-        title = run.parts.contains { $0.rule == .safeClean } ? "Clean safe items · \(run.trigger.rawValue)" : "Auto-Sweep · \(run.trigger.rawValue)"
-        detail = run.summary
+        byAutoSweep = run.trigger == .scheduled
+        if run.parts.contains(where: { $0.rule == .safeClean }) {
+            title = "Clean safe items · \(run.trigger.rawValue)"
+            detail = run.summary
+        } else {
+            title = run.whatText
+            detail = byAutoSweep ? "Auto-Sweep" : "Auto-Sweep · \(run.trigger.rawValue)"
+        }
+        why = run.why
         itemCount = run.totalItems
         // Expired Trash items were counted when they were moved; compress and processes have their own totals.
         disk = run.parts.filter { ![.processes, .compress, .expireTrash].contains($0.rule) }.reduce(0) { $0 + $1.bytes }
         memory = run.parts.filter { $0.rule == .processes }.reduce(0) { $0 + $1.bytes }
         compress = run.parts.filter { $0.rule == .compress }.reduce(0) { $0 + $1.bytes }
         permanent = false
-        automatic = run.trigger == .scheduled
+        automatic = false
         undone = run.undone
         self.canUndo = canUndo
         skippedCount = run.skippedCount ?? 0
@@ -306,6 +326,7 @@ private struct ActivityRow: View {
     let row: ActivityRowModel
     let isBusy: Bool
     let onUndo: () -> Void
+    var onTurnOff: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -322,13 +343,17 @@ private struct ActivityRow: View {
                     if row.undone {
                         tag("Undone", fg: Theme.inkSecondary, bg: Theme.hairline)
                     } else if row.permanent {
-                        tag("Permanent", fg: Theme.warning, bg: Theme.warningTint)
+                        tag(RiskTier.permanent.label, fg: RiskTier.permanent.foreground, bg: RiskTier.permanent.tint)
                     }
-                    if row.automatic {
+                    if row.byAutoSweep {
+                        tag("Auto-Sweep", fg: Theme.sweepDeep, bg: Theme.mintTint)
+                    } else if row.automatic {
                         tag("Automatic", fg: Theme.inkSecondary, bg: Theme.hairline)
+                    } else {
+                        tag("You", fg: Theme.inkSecondary, bg: Theme.hairline)
                     }
                 }
-                Text(row.detail)
+                Text(row.why ?? row.detail)
                     .font(Theme.caption)
                     .foregroundStyle(Theme.inkSecondary)
                     .lineLimit(2)
@@ -340,6 +365,13 @@ private struct ActivityRow: View {
                 }
             }
             Spacer(minLength: 12)
+            if let onTurnOff {
+                Button("Don’t do this again", action: onTurnOff)
+                    .buttonStyle(SweepLinkStyle())
+                    .font(.system(size: 12, weight: .medium))
+                    .fixedSize()
+                    .help("Unticks this rule in Settings › Automation")
+            }
             VStack(alignment: .trailing, spacing: 2) {
                 if let amount {
                     Text(amount.text)

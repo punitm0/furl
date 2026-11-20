@@ -205,8 +205,8 @@ func benchNew(root: String, width: Int, passes: Int) async throws {
         let (index, t) = try await timeAsync("ScanEngine.buildIndex") { try await walk(root, width: width, progress: progress) }
         let r = index.root
         print("     \(r.totalFiles) files, \(r.totalDirs) dirs, \(Int(Double(r.totalFiles) / t)) files/s, \(progress.unreadable) unreadable")
-        print("     allocated \(fmt(r.totalAllocated)), reclaimable \(fmt(r.totalReclaimable)), kept \(index.files.count) file records, \(index.dirs.count) dir records")
-        let memory = index.dirs.count * MemoryLayout<DirRecord>.stride + index.files.count * MemoryLayout<FileRecord>.stride + index.names.count
+        print("     allocated \(fmt(r.totalAllocated)), reclaimable \(fmt(r.totalReclaimable)), kept \(index.files.count) file records, \(index.dirs.count) dir records + \(index.hiddenDirs.count) hidden")
+        let memory = index.dirCount * MemoryLayout<DirRecord>.stride + index.files.count * MemoryLayout<FileRecord>.stride + index.names.count
         print("     index size in memory ≈ \(fmt(Int64(memory)))")
 
         // Feature queries from the one index.
@@ -237,6 +237,24 @@ func incrementalTest(root: String) async throws {
     print("\n== Incremental test on \(root) ==")
     let (_, firstReport) = try await ScanEngine.index(root: root, store: store)
     print("  first: \(firstReport.kind) in \(String(format: "%.2f", firstReport.duration)) s")
+    if let saved = store.load(root: ScanEngine.normalizedRoot(root)) {
+        let bytes = (try? fm.attributesOfItem(atPath: store.fileURL(forRoot: saved.rootPath).path)[.size] as? Int64) ?? 0
+        print("  index: \(saved.dirs.count) dir records + \(saved.hiddenDirs.count) hidden, \(saved.files.count) file records, \(saved.denseEntries.count) table entries, on disk \(fmt(bytes)) (\(bytes) B)")
+        var perDir: [Int32: Int] = [:]
+        for entry in saved.denseEntries { perDir[entry.dir, default: 0] += 1 }
+        for (dir, n) in perDir.sorted(by: { $0.value > $1.value }) {
+            print("    table: \(n) files  \(saved.path(ofDir: dir).replacingOccurrences(of: home, with: "~"))")
+        }
+    }
+    func line(_ r: ScanEngine.Report) -> String {
+        "\(r.kind) in \(String(format: "%.3f", r.duration)) s (\(r.fsEvents) events, replay \(String(format: "%.2f", r.replayDuration)) s, \(r.patchedFiles) files re-read in \(r.patchedFolders) huge folders)"
+    }
+    // Rescans a minute apart: what the user sees on a repeat scan.
+    for _ in 0..<3 {
+        try await Task.sleep(nanoseconds: 60_000_000_000)
+        let (_, r) = try await ScanEngine.index(root: root, store: store)
+        print("  rescan after 60 s: \(line(r))")
+    }
 
     // Unchanged: replay with nothing to do.
     let (_, unchanged) = try await ScanEngine.index(root: root, store: store)
@@ -253,7 +271,7 @@ func incrementalTest(root: String) async throws {
     try await Task.sleep(nanoseconds: 1_500_000_000) // let fseventsd flush
 
     let (patched, report) = try await ScanEngine.index(root: root, store: store)
-    print("  after changes: \(report.kind) in \(String(format: "%.3f", report.duration)) s (\(report.fsEvents) events, replay \(String(format: "%.2f", report.replayDuration)) s)")
+    print("  after changes: \(line(report))")
     print("  deep re-walks: \(report.deepPaths.prefix(15).map { $0.replacingOccurrences(of: home, with: "~") })")
     let fresh = try await walk(root)
     func describe(_ i: FileIndex) -> String { "files \(i.root.totalFiles), reclaimable \(i.root.totalReclaimable), kept \(i.files.count)" }
@@ -270,6 +288,52 @@ func incrementalTest(root: String) async throws {
     let fresh2 = try await walk(root)
     let p2 = afterDelete.reclaimableSize(ofPath: playground) ?? -1, f2 = fresh2.reclaimableSize(ofPath: playground) ?? -1
     print("  after delete: \(report2.kind) in \(String(format: "%.3f", report2.duration)) s; playground patched \(p2) vs fresh \(f2): \(p2 == f2 ? "match" : "MISMATCH"); a/ gone: \(afterDelete.dirID(forPath: playground + "/a") == nil)")
+
+    // A busy size-only folder: 8×8×8 leaf folders, 20 files each, 4 levels below node_modules.
+    let busy = playground + "/node_modules/big"
+    for i in 0..<8 { for j in 0..<8 { for k in 0..<8 {
+        let dir = "\(busy)/\(i)/\(j)/\(k)"
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for f in 0..<20 { fm.createFile(atPath: "\(dir)/f\(f).js", contents: Data(repeating: UInt8(f), count: 2_000)) }
+    } } }
+    try await Task.sleep(nanoseconds: 1_500_000_000)
+    let (_, report3) = try await ScanEngine.index(root: root, store: store)
+    print("  size-only tree added (10,240 files): \(report3.kind) in \(String(format: "%.3f", report3.duration)) s")
+    fm.createFile(atPath: busy + "/3/4/5/f7.js", contents: Data(repeating: 9, count: 50_000))
+    try await Task.sleep(nanoseconds: 1_500_000_000)
+    let (afterTouch, report4) = try await ScanEngine.index(root: root, store: store)
+    let fresh4 = try await walk(root)
+    let nm = playground + "/node_modules"
+    let p4 = afterTouch.reclaimableSize(ofPath: nm) ?? -1, f4 = fresh4.reclaimableSize(ofPath: nm) ?? -1
+    print("  file changed 4 levels inside node_modules: \(report4.kind) in \(String(format: "%.3f", report4.duration)) s; node_modules patched \(p4) vs fresh \(f4): \(p4 == f4 ? "match" : "MISMATCH")")
+    print("    deep re-walks: \(report4.deepPaths.prefix(15).map { $0.replacingOccurrences(of: home, with: "~") })")
+
+    // A huge flat folder like a browser cache: 5 000 small files, then change, add and delete a few.
+    let flat = playground + "/Cache_Data"
+    try fm.createDirectory(atPath: flat, withIntermediateDirectories: true)
+    for i in 0..<5_000 { fm.createFile(atPath: "\(flat)/f_\(i)", contents: Data(repeating: UInt8(i % 251), count: 200 + i % 3_000)) }
+    try await Task.sleep(nanoseconds: 1_500_000_000)
+    let (withFlat, report5) = try await ScanEngine.index(root: root, store: store)
+    let hasTable = withFlat.dirID(forPath: flat).flatMap { withFlat.denseEntries(ofDir: $0) }?.count ?? 0
+    print("  flat folder added (5 000 files): \(line(report5)); table \(hasTable) files")
+    fm.createFile(atPath: flat + "/f_10", contents: Data(repeating: 1, count: 90_000))
+    fm.createFile(atPath: flat + "/new_1", contents: Data(repeating: 2, count: 1_234))
+    try fm.removeItem(atPath: flat + "/f_20")
+    try await Task.sleep(nanoseconds: 1_500_000_000)
+    let (afterFlat, report6) = try await ScanEngine.index(root: root, store: store)
+    let fresh6 = try await walk(root)
+    let p6 = afterFlat.reclaimableSize(ofPath: flat) ?? -1, f6 = fresh6.reclaimableSize(ofPath: flat) ?? -1
+    let n6 = afterFlat.dirID(forPath: flat).map { afterFlat.dirs[Int($0)].ownFiles } ?? 0
+    let fn6 = fresh6.dirID(forPath: flat).map { fresh6.dirs[Int($0)].ownFiles } ?? 0
+    print("  3 files changed in it: \(line(report6)); patched \(p6) B / \(n6) files vs fresh \(f6) B / \(fn6) files: \(p6 == f6 && n6 == fn6 ? "match" : "MISMATCH")")
+
+    // A build writing 100 k files into 1 000 folders: events must be grouped by folder.
+    var storm = ChangeSet()
+    for d in 0..<1_000 { for f in 0..<100 { storm.files.insert("\(playground)/a/gen\(d)/obj\(f).o") } }
+    try fm.createDirectory(atPath: playground + "/a", withIntermediateDirectories: true)
+    let t0 = now()
+    let (_, stormKind) = try await ScanEngine.apply(storm, to: afterFlat, newEventID: afterFlat.eventID)
+    print(String(format: "  100 000 file events in 1 000 new folders: %@ in %.3f s", "\(stormKind)", now() - t0))
 }
 
 func spotlight(minMB: Int64) async {
@@ -408,6 +472,42 @@ func compareRoots() async throws {
     print("  junk only with discovered: \(jNew.subtracting(jOld).sorted().prefix(20).map { $0.replacingOccurrences(of: home, with: "~") })")
 }
 
+/// Cost of one change inside a size-only folder: re-sizing the whole folder (before hidden sub-records)
+/// vs re-sizing one of its level-2 sub-folders (after). Warm cache: each walk runs twice, second one kept.
+func sizeOnlyCost(paths: [String], width: Int) async throws {
+    print("\n== Re-size cost inside size-only folders (warm) ==")
+    print("| Folder | Files | Whole folder | Level-2 leaves | Median leaf | Slowest leaf |")
+    print("|---|---:|---:|---:|---:|---:|")
+    func timedWalk(_ path: String) async throws -> (Double, UInt64) {
+        var config = ScanEngine.Configuration(root: path)
+        config.width = width
+        _ = try await ScanEngine.buildIndex(root: path, configuration: config)
+        let t0 = now()
+        let index = try await ScanEngine.buildIndex(root: path, configuration: config)
+        return (now() - t0, index.root.totalFiles)
+    }
+    let fm = FileManager.default
+    for path in paths {
+        let (whole, files) = try await timedWalk(path)
+        var leaves: [String] = []
+        for a in (try? fm.contentsOfDirectory(atPath: path)) ?? [] {
+            let pa = path + "/" + a
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: pa, isDirectory: &isDir), isDir.boolValue else { continue }
+            for b in (try? fm.contentsOfDirectory(atPath: pa)) ?? [] {
+                let pb = pa + "/" + b
+                if fm.fileExists(atPath: pb, isDirectory: &isDir), isDir.boolValue { leaves.append(pb) }
+            }
+        }
+        var times: [Double] = []
+        for leaf in leaves { times.append(try await timedWalk(leaf).0) }
+        times.sort()
+        let median = times.isEmpty ? 0 : times[times.count / 2]
+        print(String(format: "| %@ | %llu | %.3f s | %d | %.4f s | %.3f s |",
+                     path.replacingOccurrences(of: home, with: "~") as NSString, files, whole, leaves.count, median, times.last ?? 0))
+    }
+}
+
 // MARK: - Main
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -439,6 +539,8 @@ case "clones":
     try await cloneTest()
 case "widths":
     try await widths(root: positional.first ?? home, list: [2, 4, 8, 12, 16, 24])
+case "sizeonly":
+    try await sizeOnlyCost(paths: Array(positional), width: width)
 case "incremental":
     try await incrementalTest(root: positional.first ?? home)
 case "phase2":
@@ -453,6 +555,8 @@ case "spotlight":
     await spotlight(minMB: Int64(intArg("--min-mb", 100)))
 case "stream":
     streamCheck()
+case "hotprobe":
+    hotProbe(paths: Array(positional), waitSeconds: intArg("--wait", 60))
 default:
     print("""
     ScanBench commands:
@@ -462,8 +566,10 @@ default:
       clones                               clone/hard-link accuracy test in a temp folder
       widths [root]                        sweep worker widths
       incremental [root]                   save → change files → FSEvents patch → compare with fresh walk
+      sizeonly <folder>…                   re-size cost: whole size-only folder vs one level-2 sub-folder
       spotlight [--min-mb N]               Spotlight fast path
       stream                               time to first streamed result vs full scan, per scanner
+      hotprobe <folder>… [--wait S]        re-read cost of huge flat folders; FSEvents folder vs file events
       --purge                              try `sudo -n purge` first (cold cache)
     """)
 }

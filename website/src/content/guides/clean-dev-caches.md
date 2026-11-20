@@ -12,6 +12,8 @@ tldr:
 updated: 2026-11-18
 ---
 
+Old `node_modules` folders and package caches from npm, pnpm, Yarn, pip and Homebrew are safe to delete: they come back the next time you install or build. Use each tool's own clean command, and `docker builder prune` for Docker.
+
 Every tool you install keeps a cache, and every project you clone keeps its own dependencies. None of it is ever cleaned up on its own.
 
 ## Forgotten node_modules folders

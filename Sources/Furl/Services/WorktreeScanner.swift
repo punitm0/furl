@@ -146,10 +146,13 @@ enum WorktreeScanner {
             let exists = FileManager.default.fileExists(atPath: entry.path)
 
             let isDirty: Bool
+            var changedFileCount: Int? = 0
             if exists && !entry.isPrunable {
                 // If git can't prove it's clean (unsafe repo config, failure, timeout): treat it as dirty.
-                let status = ShellRunner.gitStatusPorcelain(in: entry.path)
-                isDirty = status.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? true
+                // Every untracked file counts, not just its new folder: they're all lost on removal.
+                let status = ShellRunner.gitStatusPorcelain(in: entry.path, everyFile: true)
+                changedFileCount = status.map { WorktreeChange.parse($0).count }
+                isDirty = changedFileCount.map { $0 > 0 } ?? true
             } else {
                 isDirty = false
             }
@@ -189,7 +192,9 @@ enum WorktreeScanner {
                 isLocked: entry.isLocked,
                 isPrunable: entry.isPrunable || !exists,
                 sizeBytes: size,
-                pointsAtBaseTip: !isMain && !baseHead.isEmpty && entry.head == baseHead
+                pointsAtBaseTip: !isMain && !baseHead.isEmpty && entry.head == baseHead,
+                changedFileCount: changedFileCount,
+                headOnBranch: mergeStatus != .detached || branchContains(entry.head, in: mainRepoPath)
             )
             lock.lock(); slots[position] = item; lock.unlock()
         }
@@ -266,7 +271,7 @@ enum WorktreeScanner {
     }
 
     /// Local-only: no network. (A GitHub PR lookup via `gh` used to run here; the app makes no network calls apart from anonymous community totals.)
-    private static func isSquashMerged(branch: String, baseBranch: String, repoPath: String) -> Bool {
+    static func isSquashMerged(branch: String, baseBranch: String, repoPath: String) -> Bool {
         // 1. Check git cherry: if all commits have '-' (equivalent patch in baseBranch), it's rebase/cherry-merged
         let cherry = ShellRunner.git(["cherry", baseBranch, branch], in: repoPath)
         if cherry.exitCode == 0 {
@@ -325,9 +330,11 @@ enum WorktreeScanner {
         } else {
             // `--force` deletes for good, so the same guard as every other deletion applies.
             guard !DeletionService.isProtected(item.worktreePath) else {
-                return .failure(NSError(domain: "Furl.Worktree", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "Refused: \(item.worktreePath) is a protected folder"
-                ]))
+                return .failure(Self.refusal("Refused: \(item.worktreePath) is a protected folder"))
+            }
+            // Never act through a symlink: the folder git removes must be the one the scan saw.
+            guard !isSymlink(item.worktreePath) else {
+                return .failure(Self.refusal("Refused: \(item.worktreePath) is a symbolic link"))
             }
             var args = ["worktree", "remove"]
             if force {
@@ -345,24 +352,79 @@ enum WorktreeScanner {
         }
 
         var warning: String?
-        if deleteLocalBranch && item.mergeStatus != .detached && item.branchName != "HEAD" {
-            // Only squash-merged branches get -D (git -d can't see squash merges). Everything else uses -d,
-            // which git refuses for unmerged work — "Allow dirty worktrees" must never force-delete a branch.
-            let branchFlag = item.mergeStatus == .squashMerged ? "-D" : "-d"
-            let out = ShellRunner.git(["branch", branchFlag, item.branchName], in: item.repoPath)
-            if out.exitCode != 0 {
-                let msg = out.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                warning = "Worktree removed but branch '\(item.branchName)' was kept: \(msg.isEmpty ? "git branch failed" : msg)"
-            }
+        // Only merged branches are ever deleted; a branch that isn't merged is always kept.
+        if deleteLocalBranch && item.hasDeletableMergedBranch {
+            warning = deleteMergedBranch(item)
         }
 
         _ = ShellRunner.git(["worktree", "prune"], in: item.repoPath)
         return .success(RemovalOutcome(reclaimedBytes: item.sizeBytes, warning: warning))
     }
 
+    /// Deletes the branch of a merged worktree; returns a warning when it was kept. The branch must
+    /// still point at the commit the scan saw, so commits made since are never dropped. Squash merges
+    /// need -D (git -d can't see them); everything else uses -d, which git refuses for unmerged work.
+    private static func deleteMergedBranch(_ item: WorktreeItem) -> String? {
+        let ref = ShellRunner.git(["rev-parse", "--verify", "--quiet", "refs/heads/\(item.branchName)"], in: item.repoPath)
+        let tip = ref.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ref.exitCode == 0, !item.commitHash.isEmpty, tip.hasPrefix(item.commitHash) else {
+            return "Worktree removed but branch '\(item.branchName)' was kept: it changed since the scan"
+        }
+        // -D skips git's own merged check, so ask again now whether its work is on the base branch.
+        if item.mergeStatus == .squashMerged,
+           !isSquashMerged(branch: item.branchName, baseBranch: item.baseBranch, repoPath: item.repoPath) {
+            return "Worktree removed but branch '\(item.branchName)' was kept: it no longer looks merged"
+        }
+        let flag = item.mergeStatus == .squashMerged ? "-D" : "-d"
+        let out = ShellRunner.git(["branch", flag, "--", item.branchName], in: item.repoPath)
+        guard out.exitCode != 0 else { return nil }
+        let msg = out.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Worktree removed but branch '\(item.branchName)' was kept: \(msg.isEmpty ? "git branch failed" : msg)"
+    }
+
+    /// Some local branch contains `commit` (a full or short hash), so its commits survive a removal.
+    static func branchContains(_ commit: String, in directory: String) -> Bool {
+        guard !commit.isEmpty, commit.allSatisfy(\.isHexDigit) else { return false }
+        // for-each-ref, not `git branch`: in a detached worktree `branch --contains` also lists the
+        // detached HEAD itself, which is not a branch.
+        let out = ShellRunner.git(["for-each-ref", "--contains", commit, "--format=%(refname)", "refs/heads/"], in: directory)
+        return out.exitCode == 0 && !out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func isSymlink(_ path: String) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: path)[.type] as? FileAttributeType) == .typeSymbolicLink
+    }
+
+    private static func refusal(_ message: String) -> NSError {
+        NSError(domain: "Furl.Worktree", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
     static func pruneStaleWorktrees(in repoPaths: [String]) {
         for repo in Set(repoPaths) {
             _ = ShellRunner.git(["worktree", "prune"], in: repo)
         }
+    }
+}
+
+extension WorktreeChangeSnapshot {
+    /// The worktree's changes now, with a fingerprint (lstat: type, size, dates, inode) of every listed
+    /// file. Nil when git can't prove them, or when a listed path could hide files: a nested repository
+    /// shows as one "dir/" entry, so what's inside it can't be shown.
+    static func take(in worktree: String) -> WorktreeChangeSnapshot? {
+        guard let status = ShellRunner.gitStatusPorcelain(in: worktree, timeout: 30, everyFile: true) else { return nil }
+        var fingerprints: [String: String] = [:]
+        for change in WorktreeChange.parse(status) {
+            let parts = change.path.split(separator: "/", omittingEmptySubsequences: false)
+            guard !change.path.hasPrefix("/"), !change.path.hasSuffix("/"),
+                  !parts.contains(".."), !parts.contains("") else { return nil }
+            fingerprints[change.path] = fingerprint((worktree as NSString).appendingPathComponent(change.path))
+        }
+        return WorktreeChangeSnapshot(status: status, fingerprints: fingerprints)
+    }
+
+    private static func fingerprint(_ path: String) -> String {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return "missing" }
+        return "\(st.st_mode)|\(st.st_size)|\(st.st_ino)|\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)|\(st.st_ctimespec.tv_sec).\(st.st_ctimespec.tv_nsec)"
     }
 }

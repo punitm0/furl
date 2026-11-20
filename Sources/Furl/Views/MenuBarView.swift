@@ -126,14 +126,15 @@ struct MenuBarView: View {
                         .tracking(-0.5)
                         .foregroundStyle(MenuBarPalette.accent)
                         .contentTransition(.numericText())
-                    Text("can be freed right now")
+                    // Like the Overview: a number from a scan still streaming in is only "so far".
+                    Text(state.isScanningJunk ? "safe so far · still checking" : "safe to remove right now")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.inkSecondary)
-                } else if state.isScanningJunk || state.isScanningWorktrees {
+                } else if state.isScanningJunk {
                     Text("Looking…")
                         .font(Theme.display(22))
                         .foregroundStyle(Theme.inkSecondary)
-                    Text("checking caches and worktrees")
+                    Text("checking caches")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.inkSecondary)
                 } else {
@@ -150,7 +151,8 @@ struct MenuBarView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var reclaimableBytes: Int64 { state.totalReclaimableBytes }
+    /// The Overview's "Safe now" number (GetSpaceBack board: the same number everywhere).
+    private var reclaimableBytes: Int64 { state.safeCleanupPlan.bytes }
 
     private var usedFraction: Double { state.diskUsage.usedFraction }
 
@@ -189,21 +191,23 @@ struct MenuBarView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .foregroundStyle(Theme.onSweep)
-                .background(MenuBarPalette.accent.opacity(plan.isEmpty ? 0.45 : 1),
+                .background(MenuBarPalette.accent.opacity(plan.isEmpty || state.isScanningJunk ? 0.45 : 1),
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(plan.isEmpty || busy || state.isCleaning)
-            .help("Only caches and junk rated Safe, plus merged worktrees with no uncommitted changes")
+            // Waits for the caches scan to finish, as the Overview's button does.
+            .disabled(plan.isEmpty || busy || state.isCleaning || state.isScanningJunk)
+            .help("Only caches and junk rated Safe and still ticked. Everything goes to the Trash.")
         }
     }
 
     private func primaryTitle(_ plan: AppState.SafeCleanupPlan) -> String {
         if state.safeCleanPhase == .checking { return "Checking…" }
         if state.isCleaning { return "Cleaning…" }
+        if state.isScanningJunk { return "Checking caches…" }
         if plan.isEmpty { return state.hasScannedForSafeCleanup ? "No safe items to clean" : "Finding safe items…" }
-        return "Clean safe items · \(FileSizeHelper.formatBytes(plan.bytes))"
+        return "Move \(FileSizeHelper.formatBytes(plan.bytes)) to Trash"
     }
 
     // MARK: Rows
@@ -299,7 +303,24 @@ struct MenuBarView: View {
 
     // MARK: Footer lines
 
+    @ViewBuilder
     private var autoSweepLine: some View {
+        if store.autoSweepEnabled, store.nextRun != nil {
+            // AutoSweepTrust "Menu bar · next run": the same preview as Settings, with See list.
+            MenuBarNextRunCard(store: store, onSeeList: {
+                store.listRequest = .seeList
+                showSettings(tab: .automation)
+            }, onReview: {
+                store.listRequest = .review
+                showSettings(tab: .automation)
+            })
+            .onAppear { AppServices.scheduler.refreshPreviewIfNeeded() }
+        } else {
+            autoSweepStatusLine
+        }
+    }
+
+    private var autoSweepStatusLine: some View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.clockwise")
                 .font(.system(size: 11))

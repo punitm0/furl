@@ -4,6 +4,8 @@ import Base from "../../layouts/Base.astro";
 import Header from "../../components/Header.astro";
 import Footer from "../../components/Footer.astro";
 import GuideCard from "../../components/GuideCard.astro";
+import StructuredData from "../../components/StructuredData.astro";
+import { breadcrumbs } from "../../lib/structuredData";
 
 // GuidesPage board: two groups, each filling whole rows of three.
 const guides = (await getCollection("guides")).sort((a, b) => a.data.order - b.data.order);
@@ -21,8 +23,8 @@ const groups = [
 ].map((g) => ({ ...g, guides: guides.filter((guide) => guide.data.audience === g.id) }));
 ---
 <Base
-  title="Guides · Furl"
-  description="Plain-English guides to getting disk space and memory back on a Mac, with the Terminal commands to do it yourself."
+  title="Guides to freeing disk space on a Mac · Furl"
+  description="Plain-English guides to getting disk space and memory back on a Mac: System Data, Xcode, Docker, dev caches, worktrees and more, with Terminal commands."
 >
   <Header />
   <main id="main" class="guides-page">
@@ -45,4 +47,5 @@ const groups = [
     ))}
   </main>
   <Footer />
+  <StructuredData graph={[breadcrumbs([{ name: "Home", path: "/" }, { name: "Guides", path: "/guides/" }])]} />
 </Base>

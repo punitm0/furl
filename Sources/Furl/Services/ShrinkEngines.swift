@@ -79,7 +79,9 @@ enum ShrinkEngines {
         // which cjpeg would drop.
         let mozOut = (workDir as NSString).appendingPathComponent("mozjpeg-" + (out as NSString).lastPathComponent)
         var haveMoz = false
-        if outType == .jpeg, isJPEG, !wantsResize, let cjpeg = options.tools.mozjpeg,
+        // Not when removing photo details: that path copies the original metadata back as a whole.
+        let strip = options.stripPhotoMetadata
+        if outType == .jpeg, isJPEG, !wantsResize, !strip, let cjpeg = options.tools.mozjpeg,
            !auxiliaryTypes.contains(where: { CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0, $0) != nil }) {
             haveMoz = mozJPEG(cjpeg, source: source, path: path, out: mozOut, workDir: workDir, quality: quality) == .ok
                 && photoMetadataProblem(original: props, output: mozOut) == nil
@@ -112,11 +114,13 @@ enum ShrinkEngines {
                 meta[kCGImagePropertyExifDictionary] = exif
             }
             meta.removeValue(forKey: kCGImagePropertyFileSize)
+            if strip { meta = removingPhotoDetails(meta) }
             meta[kCGImageDestinationLossyCompressionQuality] = quality
             CGImageDestinationAddImage(dest, image, meta as CFDictionary)
             resized = true
         } else {
-            let destProps: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+            var destProps: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+            if strip { destProps.merge(photoDetailRemovals(props)) { _, new in new } }
             CGImageDestinationAddImageFromSource(dest, source, 0, destProps as CFDictionary)
         }
         // HDR gain maps, depth and portrait mattes. Without them HDR photos look flat and Portrait edits stop working.
@@ -128,7 +132,7 @@ enum ShrinkEngines {
         }
         guard CGImageDestinationFinalize(dest) else { return .fail("Couldn't write the new image") }
 
-        let imageIOProblem = photoMetadataProblem(original: props, output: out)
+        let imageIOProblem = photoMetadataProblem(original: props, output: out, stripped: strip)
         if haveMoz, imageIOProblem != nil || fileSize(mozOut) < fileSize(out) {
             try? FileManager.default.removeItem(atPath: out)
             guard (try? FileManager.default.moveItem(atPath: mozOut, toPath: out)) != nil else { return .fail("Couldn't write the new image") }
@@ -157,13 +161,83 @@ enum ShrinkEngines {
         return types
     }
 
-    /// Makes sure the location, camera data, orientation and colour profile survived the re-encode.
-    static func photoMetadataProblem(original: [CFString: Any], output: String) -> String? {
+    /// GPS, camera and lens keys removed when "Also remove photo location and camera details" is on.
+    static var cameraTIFFKeys: [CFString] { [kCGImagePropertyTIFFMake, kCGImagePropertyTIFFModel] }
+    static var cameraExifKeys: [CFString] { [
+        kCGImagePropertyExifLensMake, kCGImagePropertyExifLensModel, kCGImagePropertyExifLensSpecification,
+        kCGImagePropertyExifBodySerialNumber, kCGImagePropertyExifLensSerialNumber, kCGImagePropertyExifCameraOwnerName
+    ] }
+    /// Place names a photo can carry besides GPS (IPTC, mirrored in XMP).
+    static var placeIPTCKeys: [CFString] { [
+        kCGImagePropertyIPTCCity, kCGImagePropertyIPTCSubLocation, kCGImagePropertyIPTCProvinceState,
+        kCGImagePropertyIPTCCountryPrimaryLocationName, kCGImagePropertyIPTCCountryPrimaryLocationCode
+    ] }
+    /// XMP paths for the same place names, removed from the output's metadata after encoding.
+    static let placeXMPPaths = [
+        "photoshop:City", "photoshop:State", "photoshop:Country",
+        "Iptc4xmpCore:Location", "Iptc4xmpCore:CountryCode",
+        "exif:GPSLatitude", "exif:GPSLongitude", "exif:GPSAltitude"
+    ]
+    static var wholeDetailDictionaries: [CFString] { [
+        kCGImagePropertyGPSDictionary, kCGImagePropertyExifAuxDictionary, kCGImagePropertyMakerAppleDictionary
+    ] }
+
+    /// Properties for a freshly drawn image (resize path): the detail keys are simply left out.
+    static func removingPhotoDetails(_ props: [CFString: Any]) -> [CFString: Any] {
+        var meta = props
+        for key in wholeDetailDictionaries { meta.removeValue(forKey: key) }
+        if var tiff = meta[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            for key in cameraTIFFKeys { tiff.removeValue(forKey: key) }
+            meta[kCGImagePropertyTIFFDictionary] = tiff
+        }
+        if var exif = meta[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            for key in cameraExifKeys { exif.removeValue(forKey: key) }
+            meta[kCGImagePropertyExifDictionary] = exif
+        }
+        if var iptc = meta[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            for key in placeIPTCKeys { iptc.removeValue(forKey: key) }
+            meta[kCGImagePropertyIPTCDictionary] = iptc
+        }
+        return meta
+    }
+
+    /// Overrides for `CGImageDestinationAddImageFromSource`, which keeps the source's metadata: kCFNull removes a key.
+    static func photoDetailRemovals(_ props: [CFString: Any]) -> [CFString: Any] {
+        var removals: [CFString: Any] = [:]
+        for key in wholeDetailDictionaries { removals[key] = kCFNull }
+        if var tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            for key in cameraTIFFKeys { tiff[key] = kCFNull }
+            removals[kCGImagePropertyTIFFDictionary] = tiff
+        }
+        if var exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            for key in cameraExifKeys { exif[key] = kCFNull }
+            removals[kCGImagePropertyExifDictionary] = exif
+        }
+        if var iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            for key in placeIPTCKeys { iptc[key] = kCFNull }
+            removals[kCGImagePropertyIPTCDictionary] = iptc
+        }
+        return removals
+    }
+
+    /// Makes sure the location, camera data, orientation and colour profile survived the re-encode, or, when
+    /// `stripped`, that location and camera are gone while the rest survived.
+    static func photoMetadataProblem(original: [CFString: Any], output: String, stripped: Bool = false) -> String? {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: output) as CFURL, nil),
               let new = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
             return "couldn't read the result"
         }
-        if let gps = original[kCGImagePropertyGPSDictionary] as? [CFString: Any], !gps.isEmpty {
+        if stripped {
+            if let gps = new[kCGImagePropertyGPSDictionary] as? [CFString: Any], !gps.isEmpty { return "location still there" }
+            let tiff = new[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+            if cameraTIFFKeys.contains(where: { tiff?[$0] != nil }) { return "camera still there" }
+            let iptc = new[kCGImagePropertyIPTCDictionary] as? [CFString: Any]
+            if placeIPTCKeys.contains(where: { iptc?[$0] != nil }) { return "place name still there" }
+            if let xmp = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
+               placeXMPPaths.contains(where: { CGImageMetadataCopyTagWithPath(xmp, nil, $0 as CFString) != nil }) {
+                return "place name still there"
+            }
+        } else if let gps = original[kCGImagePropertyGPSDictionary] as? [CFString: Any], !gps.isEmpty {
             guard let newGPS = new[kCGImagePropertyGPSDictionary] as? [CFString: Any],
                   (newGPS[kCGImagePropertyGPSLatitude] as? Double) == (gps[kCGImagePropertyGPSLatitude] as? Double),
                   (newGPS[kCGImagePropertyGPSLongitude] as? Double) == (gps[kCGImagePropertyGPSLongitude] as? Double) else {
@@ -177,7 +251,7 @@ enum ShrinkEngines {
                 return "date taken"
             }
         }
-        if let make = (original[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFMake] as? String,
+        if !stripped, let make = (original[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFMake] as? String,
            ((new[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFMake] as? String) != make {
             return "camera"
         }

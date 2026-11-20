@@ -62,22 +62,9 @@ struct SettingsView: View {
             }
 
             Section("Scanning") {
+                // SettingsMoved board: the "unused after" days and the large-file size live on their screens.
                 Toggle("Scan everything when Furl opens", isOn: $state.scanOnLaunch)
                     .help("Also rescans worktrees and junk automatically when scan folders change")
-                Stepper(value: $state.staleDaysThreshold, in: 1...365, step: 1) {
-                    LabeledContent("Treat dependencies as stale after", value: "\(state.staleDaysThreshold) days")
-                }
-                LabeledContent("Large file minimum size") {
-                    FurlPopUp("Large file minimum size", selection: $state.largeFileThresholdMB,
-                              value: state.largeFileThresholdMB >= 1000 ? "\(state.largeFileThresholdMB / 1000) GB" : "\(state.largeFileThresholdMB) MB") {
-                        Text("50 MB").tag(Int64(50))
-                        Text("100 MB").tag(Int64(100))
-                        Text("250 MB").tag(Int64(250))
-                        Text("500 MB").tag(Int64(500))
-                        Text("1 GB").tag(Int64(1000))
-                        Text("5 GB").tag(Int64(5000))
-                    }
-                }
             }
 
             Section("Menu bar") {
@@ -160,7 +147,7 @@ struct SettingsView: View {
 
                 folderSection(
                     title: "Also scan",
-                    caption: "Extra folders to search for worktrees, node_modules, build caches and .DS_Store files — for example projects on an external drive.",
+                    caption: nil,
                     paths: state.extraScanRoots,
                     emptyText: "Nothing extra. Drop folders here or click Add.",
                     add: { state.addExtraScanRoot() },
@@ -169,10 +156,11 @@ struct SettingsView: View {
                 )
 
                 folderSection(
-                    title: "Exclude",
-                    caption: "Furl never looks for projects, worktrees or junk inside these folders.",
+                    title: "Never scan",
+                    caption: "Furl never looks inside these folders. “Don’t scan here” on any row adds to this list.",
                     paths: state.excludedScanRoots,
-                    emptyText: "Nothing excluded.",
+                    sources: state.excludedScanRootSources,
+                    emptyText: "Nothing skipped.",
                     add: { state.addExcludedScanRoot() },
                     addPath: { state.addExcludedScanRoot(path: $0) },
                     remove: { state.removeExcludedScanRoot($0) }
@@ -191,11 +179,11 @@ struct SettingsView: View {
         if count == 0 {
             return "No projects found in your home folder. Add folders below if your projects live elsewhere."
         }
-        return "Found \(count) project folder\(count == 1 ? "" : "s") in your home folder (Git repositories and folders with project files such as package.json, Cargo.toml or Xcode projects). ~/Library and the Trash are skipped."
+        return "Found \(count) project folder\(count == 1 ? "" : "s") in your home folder. ~/Library and the Trash are skipped."
     }
 
     private func folderSection(
-        title: String, caption: String, paths: [String], emptyText: String,
+        title: String, caption: String?, paths: [String], sources: [String: String] = [:], emptyText: String,
         add: @escaping () -> Void, addPath: @escaping (String) -> Void, remove: @escaping (String) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -205,11 +193,13 @@ struct SettingsView: View {
                 Button(action: add) { Label("Add…", systemImage: "plus") }
                     .controlSize(.small)
             }
-            Text(caption)
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            ScanFoldersList(paths: paths, emptyText: emptyText, addPath: addPath, remove: remove)
+            if let caption {
+                Text(caption)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScanFoldersList(paths: paths, sources: sources, emptyText: emptyText, addPath: addPath, remove: remove)
         }
     }
 
@@ -328,6 +318,8 @@ private struct FullDiskAccessPane: View {
 /// Editable list of folders; accepts folders dropped from Finder.
 struct ScanFoldersList: View {
     let paths: [String]
+    /// "added from Caches & Junk" tags, keyed by path.
+    var sources: [String: String] = [:]
     let emptyText: String
     let addPath: (String) -> Void
     let remove: (String) -> Void
@@ -356,6 +348,13 @@ struct ScanFoldersList: View {
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .help(exists ? root : "\(root) — folder not found")
+                        if let source = sources[root] {
+                            Text("added from \(source)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.inkSecondary)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
                         Button {
                             DeletionService.revealInFinder(root)
                         } label: {
@@ -414,30 +413,69 @@ private struct AutomationSettingsTab: View {
 
     var body: some View {
         Form {
+            // AutoSweepTrust: Off / Ask first / Automatic, what picking one turned on, and the next run.
             Section {
-                Toggle(isOn: $store.autoSweepEnabled.withSideEffect(requestNotifications)) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-Sweep").font(.headline)
-                        // Off, the caption says plainly that the switch is what runs the rules below.
-                        Text(store.autoSweepEnabled
-                             ? "Safe chores Furl does by itself. Files go to the Trash first and show up in History below."
-                             : "Off. Turn it on to run the rules below.")
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Auto-Sweep").font(.system(size: 12.5, weight: .semibold))
+                        Text(modeCaption)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Picker("Auto-Sweep", selection: modeBinding) {
+                        ForEach(AutoSweepMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                if store.autoSweepEnabled {
+                    if store.keepRunningInMenuBar && store.showMenuBarItem {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Theme.sweep)
+                            Text("Furl keeps running in the menu bar so it can do this.")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Change") { SettingsTab.select(.general) }
+                                .buttonStyle(SweepLinkStyle())
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .font(.system(size: 11))
+                    } else {
+                        // Turned off again in General: say plainly what that means.
+                        HStack {
+                            Text("Auto-Sweep only runs while Furl is open.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.warning)
+                            Spacer()
+                            Button("Keep running in menu bar") {
+                                store.showMenuBarItem = true
+                                store.keepRunningInMenuBar = true
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    if !store.launchAtLogin {
+                        HStack(spacing: 6) {
+                            Text("After a restart, Auto-Sweep waits until you open Furl.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.warning)
+                            Spacer()
+                            // Same setting as General › Open Furl at login; the line goes away once it's on.
+                            Button("Open at login") { store.launchAtLogin = true }
+                                .controlSize(.small)
+                        }
                     }
                 }
-                if store.autoSweepEnabled && !(store.keepRunningInMenuBar && store.showMenuBarItem) {
-                    HStack {
-                        Text("Auto-Sweep only runs while Furl is open.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.warning)
-                        Spacer()
-                        Button("Keep running in menu bar") {
-                            store.showMenuBarItem = true
-                            store.keepRunningInMenuBar = true
-                        }
-                        .controlSize(.small)
-                    }
+            }
+
+            if store.autoSweepEnabled, store.nextRun != nil {
+                Section {
+                    nextRunRow
                 }
             }
 
@@ -445,6 +483,7 @@ private struct AutomationSettingsTab: View {
                 ruleRow(
                     isOn: $store.cachesEnabled,
                     title: "Clean caches and stale node_modules",
+                    badge: ("Safe", Theme.sweep),
                     caption: "Safe caches, plus build and dependency folders not used in \(store.cachesUnusedDays) days"
                 ) {
                     // A labelled Stepper inside a Form lays out as a full-width form row and squeezes the
@@ -465,6 +504,7 @@ private struct AutomationSettingsTab: View {
                     ruleRow(
                         isOn: $store.stopProcessesEnabled,
                         title: "Stop dev servers left by closed agent sessions",
+                        badge: ("Safe", Theme.sweep),
                         caption: "Claude Code, Codex, Cursor, Gemini CLI, Copilot"
                     ) {
                         FurlPopUp("Stop dev servers after", selection: $store.stopProcessesAfterHours,
@@ -479,24 +519,9 @@ private struct AutomationSettingsTab: View {
                 }
 
                 ruleRow(
-                    isOn: $store.expireTrashEnabled,
-                    title: "Empty Trash items older than",
-                    caption: "Only what Furl moved there (\(store.ledger.count) \(store.ledger.count == 1 ? "item" : "items") tracked) — never your other Trash items"
-                ) {
-                    FurlPopUp("Empty Trash items older than", selection: $store.expireTrashDays, value: "\(store.expireTrashDays) days") {
-                        Text("7 days").tag(7)
-                        Text("14 days").tag(14)
-                        Text("30 days").tag(30)
-                        Text("60 days").tag(60)
-                        Text("90 days").tag(90)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                }
-
-                ruleRow(
                     isOn: $store.tidyDownloadsEnabled,
                     title: "Tidy Downloads",
+                    badge: ("Check first", Theme.warning),
                     caption: "Installer images over a week old, unfinished downloads, archives you already unzipped"
                 ) {
                     Text("Daily").foregroundStyle(.secondary).dimmedWhenDisabled()
@@ -520,6 +545,29 @@ private struct AutomationSettingsTab: View {
             } header: {
                 // The heading fades with the rules so the whole group reads as off.
                 Text("Rules").dimmedWhenDisabled()
+            }
+            .disabled(!store.autoSweepEnabled)
+
+            // Defect H2: emptying Furl's Trash items is permanent, so it has its own group and starts unticked.
+            Section {
+                ruleRow(
+                    isOn: $store.expireTrashEnabled,
+                    title: "Empty Furl’s Trash items after \(store.expireTrashDays) days",
+                    badge: ("Permanent", Theme.danger),
+                    caption: "Only what Furl moved there. Your other Trash items are never touched. This can’t be undone."
+                ) {
+                    FurlPopUp("Empty Furl’s Trash items after", selection: $store.expireTrashDays, value: "\(store.expireTrashDays) days") {
+                        Text("7 days").tag(7)
+                        Text("14 days").tag(14)
+                        Text("30 days").tag(30)
+                        Text("60 days").tag(60)
+                        Text("90 days").tag(90)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            } header: {
+                Text("Permanent").dimmedWhenDisabled()
             }
             .disabled(!store.autoSweepEnabled)
 
@@ -553,6 +601,7 @@ private struct AutomationSettingsTab: View {
                     }
                     Spacer()
                     if store.isRunning { ProgressView().controlSize(.small) }
+                    // Ask first: opens Review with a fresh list instead of cleaning straight away.
                     Button("Run now") {
                         Task { await AppServices.scheduler.runNow() }
                     }
@@ -564,19 +613,111 @@ private struct AutomationSettingsTab: View {
         }
         .formStyle(.grouped)
         .task { await notifications.refreshAuthorization() }
+        .onAppear { AppServices.scheduler.refreshPreviewIfNeeded() }
+        .onChange(of: store.mode) { _, _ in AppServices.scheduler.refreshPreviewIfNeeded() }
+        .sheet(item: $store.listRequest) { request in
+            AutoSweepListSheet(store: store, request: request)
+        }
+    }
+
+    // MARK: Mode and next run
+
+    private var modeCaption: String {
+        switch store.mode {
+        case .off: return "Furl won’t clean anything by itself."
+        case .askFirst: return "Furl finds safe items on schedule and asks before moving them."
+        case .automatic: return "Furl moves safe items to the Trash on schedule and tells you after."
+        }
+    }
+
+    private var modeBinding: Binding<AutoSweepMode> {
+        Binding(
+            get: { store.mode },
+            set: { newMode in
+                store.setMode(newMode)
+                requestNotifications(newMode != .off)
+            }
+        )
+    }
+
+    /// "Next: Sunday at 9:00 · about 5.0 GB" with the breakdown and See list. While an Ask first run
+    /// waits for an answer, it says so with Review (also when its notification couldn't be shown).
+    @ViewBuilder
+    private var nextRunRow: some View {
+        if let ask = store.pendingAsk {
+            HStack(spacing: 10) {
+                Image(systemName: "clock")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.sweep)
+                (Text("Auto-Sweep is ready").fontWeight(.semibold)
+                    + Text(ask.totalBytes > 0 ? " · about \(FileSizeHelper.formatBytes(ask.totalBytes)) · waiting for you" : " · waiting for you"))
+                    .font(.system(size: 12.5))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Review") { store.listRequest = .review }
+                    .controlSize(.small)
+            }
+        } else {
+            upcomingRunRow
+        }
+    }
+
+    private var upcomingRunRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "clock")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.sweep)
+            VStack(alignment: .leading, spacing: 1) {
+                let when = store.nextRun.map { AutoSweepStore.dayAndTime($0.date) } ?? ""
+                if let preview = store.nextRunPreview, !store.isPreviewing || !preview.isEmpty {
+                    (Text("Next: \(when)").fontWeight(.semibold)
+                        + Text(preview.isEmpty ? " · nothing to clean right now" : " · about \(FileSizeHelper.formatBytes(preview.totalBytes))"))
+                        .font(.system(size: 12.5))
+                    Text(nextRunCaption(preview))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    (Text("Next: \(when)").fontWeight(.semibold) + Text(" · checking what it would clean…"))
+                        .font(.system(size: 12.5))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("See list") { store.listRequest = .seeList }
+                .controlSize(.small)
+                .disabled(store.nextRunPreview?.isEmpty ?? true)
+        }
+    }
+
+    private func nextRunCaption(_ preview: AutoSweepPreview) -> String {
+        let tail = store.mode == .askFirst ? "you’ll be asked first" : "Furl tells you after"
+        let breakdown = preview.breakdown()
+        return breakdown.isEmpty ? tail.prefix(1).uppercased() + tail.dropFirst() : "\(breakdown) · \(tail)"
     }
 
     // MARK: Rows
 
     private func ruleRow<Trailing: View>(
-        isOn: Binding<Bool>, title: String, caption: String, @ViewBuilder trailing: () -> Trailing
+        isOn: Binding<Bool>, title: String, badge: (text: String, color: Color)? = nil, caption: String,
+        @ViewBuilder trailing: () -> Trailing
     ) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.furlCheckbox)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                HStack(spacing: 6) {
+                    Text(title)
+                    if let badge {
+                        // AutoSweepTrust: the risk tier chip beside each rule (10 pt on the colour's tint).
+                        Text(badge.text)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(badge.color == Theme.sweep ? Theme.sweepDeep : badge.color)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(BadgeView.tint(for: badge.color), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .fixedSize()
+                    }
+                }
                 Text(caption)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -691,6 +832,11 @@ private struct AutomationSettingsTab: View {
                             Text(run.summary)
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
+                            if let why = run.why {
+                                Text(why)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
                             if !run.errors.isEmpty {
                                 Text("\(run.errors.count) \(run.errors.count == 1 ? "item" : "items") couldn't be cleaned")
                                     .font(.system(size: 11))

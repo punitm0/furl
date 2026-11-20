@@ -11,10 +11,12 @@ import GuidesTeaser from "../components/GuidesTeaser.astro";
 import Waitlist from "../components/Waitlist.astro";
 import { site } from "../site.config";
 import Footer from "../components/Footer.astro";
+import StructuredData from "../components/StructuredData.astro";
+import { siteGraph } from "../lib/structuredData";
 ---
 <Base
-  title="Furl: get your Mac's space back"
-  description="Furl finds the caches, merged worktrees, forgotten downloads and leftover dev servers you don't need, tells you why, and uses the Trash by default so you can undo. Free, open source, private by default."
+  title="Furl: free, open source disk space cleaner for Mac"
+  description="Furl finds caches, merged git worktrees, app leftovers and stray dev servers, says why each is safe, and uses the Trash so you can undo. Free and open source."
 >
   <Header />
   <main id="main">
@@ -28,4 +30,5 @@ import Footer from "../components/Footer.astro";
     {site.waitlistUrl && <Waitlist />}
   </main>
   <Footer />
+  <StructuredData graph={siteGraph()} />
 </Base>

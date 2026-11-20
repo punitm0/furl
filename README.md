@@ -61,7 +61,7 @@ Reclaimable sizes use APFS *private size* (`ATTR_CMNEXT_PRIVATESIZE`), the bytes
 ## Usability
 
 - **Automatic scanning**: everything is scanned when the app opens (toggle in Settings), and worktrees/junk rescan when scan folders change.
-- **Settings window (⌘,)**: deletion mode, stale-dependency days, large-file threshold, scan folders, Full Disk Access shortcut. All settings persist.
+- **Settings window (⌘,)**: deletion mode, scan folders (Also scan / Never scan), Full Disk Access shortcut. Rules sit on their screens: "Dependencies count as unused after" on Caches & Junk, "Bigger than" on Large Files. Right-click a row and choose "Don’t scan here…" to add its folder to Never scan. All settings persist.
 - **Keyboard**: ⌘R scan everything, ⇧⌘R rescan current section, ⌘1–⌘9 switch sections, ⌘O add scan folder, ⌘⌫ clean the current selection.
 - Search, sorting and category chips in every list; right-click any row to Reveal in Finder, Open or Copy Path; drop folders onto the scan-folder list.
 - **Undo**: every Move-to-Trash cleanup can be undone from the banner or with ⌥⌘Z. Deletions show live progress.

@@ -125,14 +125,15 @@ struct CleanupTrayView: View {
     }
 
     private func group(_ source: TraySource, items: [TrayItem]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let prefix = CleanupTray.sharedBranchPrefix(items)
+        return VStack(alignment: .leading, spacing: 2) {
             Text("From \(source.section.rawValue)")
                 .font(Theme.caption.weight(.semibold))
                 .foregroundStyle(Theme.inkSecondary)
                 .padding(.horizontal, 6)
                 .padding(.bottom, 2)
             ForEach(items) { item in
-                TrayRow(item: item, tray: tray)
+                TrayRow(item: item, tray: tray, sharedPrefix: prefix)
             }
         }
     }
@@ -236,11 +237,13 @@ struct CleanupTrayView: View {
     }
 
     private var primaryTitle: String {
-        if tray.items.isEmpty { return state.deletionMode == .permanent ? "Delete" : "Move to Trash" }
-        let size = FileSizeHelper.formatBytes(tray.includedBytes)
-        if state.deletionMode == .permanent { return "Delete \(size)" }
-        if !tray.includedItems.isEmpty && permanentCount == tray.includedItems.count { return "Remove \(size)" }
-        return "Move \(size) to Trash"
+        CleanupTray.primaryTitle(
+            hasItems: !tray.items.isEmpty,
+            includedCount: tray.includedItems.count,
+            permanentCount: permanentCount,
+            bytes: tray.includedBytes,
+            mode: state.deletionMode
+        )
     }
 
     private var confirmTitle: String {
@@ -264,6 +267,8 @@ struct CleanupTrayView: View {
 private struct TrayRow: View {
     let item: TrayItem
     @ObservedObject var tray: CleanupTray
+    /// From `CleanupTray.sharedBranchPrefix`, worked out once for the whole list.
+    var sharedPrefix = ""
     @State private var hovering = false
 
     var body: some View {
@@ -276,23 +281,26 @@ private struct TrayRow: View {
             .labelsHidden()
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(item.title)
+                    Text(CleanupTray.displayTitle(item, sharedPrefix: sharedPrefix))
                         .font(Theme.body)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        // A branch's distinctive part is at its end ("…-0c93f3").
+                        .truncationMode(item.source == .worktrees ? .head : .middle)
+                        .help(item.title)
+                    // WhySafe board: the same one-word chips as the lists.
+                    if item.checkFirst == true {
+                        RiskChip(tier: .checkFirst, compact: true)
+                    }
                     if item.isPermanent {
-                        Text("Permanent")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Theme.warning)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Theme.warningTint, in: Capsule())
+                        RiskChip(tier: .permanent, compact: true,
+                                 help: "Can't go to the Trash. It's removed for good.")
                     }
                 }
-                Text(item.subtitle)
+                let needsAccess = tray.needsAccessIDs.contains(item.id)
+                Text(needsAccess ? "Needs Full Disk Access to check" : item.subtitle)
                     .font(Theme.micro)
-                    .foregroundStyle(Theme.inkSecondary)
+                    .foregroundStyle(needsAccess ? Theme.warning : Theme.inkSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }

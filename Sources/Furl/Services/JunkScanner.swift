@@ -63,7 +63,7 @@ enum JunkScanner {
 
         // Fixed Xcode / Simulator locations
         let fixedTargets: [(path: String, name: String, risk: RiskLevel, reason: String)] = [
-            ("\(home)/Library/Developer/Xcode/DerivedData", "Xcode DerivedData", .safe, "Rebuilt automatically by Xcode when needed"),
+            ("\(home)/Library/Developer/Xcode/DerivedData", "Xcode build files · DerivedData", .safe, "Rebuilt automatically by Xcode when needed"),
             ("\(home)/Library/Developer/Xcode/iOS DeviceSupport", "Xcode iOS DeviceSupport", .moderate, "Debug symbols for older iOS devices"),
             ("\(home)/Library/Developer/Xcode/Archives", "Xcode Archives", .review, "Old app archive builds (.xcarchive)"),
             ("\(home)/Library/Developer/CoreSimulator/Caches", "CoreSimulator Caches", .safe, "Cached simulator runtime data")
@@ -159,16 +159,16 @@ enum JunkScanner {
 
         let daysOld = FileSizeHelper.daysSinceModified(at: url) ?? 0
         let size = FileSizeHelper.directorySize(at: url)
-        if (name == "node_modules" || name == ".venv" || name == "venv") && daysOld < staleDays && size < 200_000_000 {
+        // Small dependency folders only count once unused; big ones are always worth showing.
+        let gated = (name == "node_modules" || name == ".venv" || name == "venv") && size < 200_000_000
+        if gated && daysOld < staleDays {
             return nil
         }
         guard size > 5_000_000 else { return nil }
 
         let parentName = url.deletingLastPathComponent().lastPathComponent
         let risk: RiskLevel = (name == ".next" || name == ".turbo" || name == "__pycache__" || name == ".pytest_cache") ? .safe : .moderate
-        let reason = daysOld >= staleDays
-            ? "Unused for \(daysOld) days in \(parentName)"
-            : "Build/dependency folder in \(parentName) (reinstallable)"
+        let reason = devArtifactReason(daysOld: daysOld, staleDays: staleDays, projectName: parentName)
 
         return JunkItem(
             id: path,
@@ -178,8 +178,16 @@ enum JunkScanner {
             risk: risk,
             sizeBytes: size,
             modifiedDate: FileSizeHelper.modifiedDate(at: url),
-            reason: reason
+            reason: reason,
+            listedOnlyWhenUnused: gated,
+            projectName: parentName
         )
+    }
+
+    static func devArtifactReason(daysOld: Int, staleDays: Int, projectName: String) -> String {
+        daysOld >= staleDays
+            ? "Unused for \(daysOld) days in \(projectName)"
+            : "Build/dependency folder in \(projectName) (reinstallable)"
     }
 
     /// Avoid false positives for generic folder names like `target` or `venv`.
@@ -342,7 +350,8 @@ enum JunkScanner {
                 sizeBytes: size,
                 modifiedDate: FileSizeHelper.modifiedDate(at: child),
                 reason: plainInstaller ? "Installer image (\(days)d old)"
-                    : (isInstaller ? "Disk image (\(days)d old); check it isn't a backup" : "Old archive in Downloads (\(days)d old)")
+                    : (isInstaller ? "Disk image (\(days)d old); check it isn't a backup" : "Old archive in Downloads (\(days)d old)"),
+                listedOnlyWhenUnused: isArchive
             ))
         }
 
@@ -692,7 +701,7 @@ extension JunkScanner {
         if !danglingSizes.isEmpty {
             items.append(dockerItem(
                 key: "dangling-images",
-                name: "Docker · \(danglingSizes.count) dangling image\(danglingSizes.count == 1 ? "" : "s")",
+                name: "\(danglingSizes.count) untagged Docker image\(danglingSizes.count == 1 ? "" : "s")",
                 size: danglingSizes.reduce(0, +),
                 reason: "Untagged image layers left behind by rebuilds" + note,
                 command: JunkCommand(executable: docker, arguments: ["image", "prune", "-f"])

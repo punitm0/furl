@@ -360,9 +360,9 @@ final class ProcessesStore: ObservableObject {
         await stop(leftovers, signal: SIGTERM, automatic: false)
     }
 
-    /// Gracefully stops leftovers orphaned for at least `hours` (used by Auto-Sweep).
-    /// Refreshes first so the list is current. Returns how many were stopped and the memory freed.
-    func stopLeftovers(orphanedForAtLeast hours: Int, now: Date = Date()) async -> (count: Int, bytes: UInt64) {
+    /// Leftovers Auto-Sweep would stop now (orphaned for at least `hours`, never exempt ones).
+    /// Refreshes first so the list is current. Stops nothing; Ask first shows these.
+    func leftoversDue(orphanedForAtLeast hours: Int, now: Date = Date()) async -> [LeftoverProcess] {
         // refresh() returns at once if another refresh is running; wait for that one instead.
         while isRefreshing {
             try? await Task.sleep(nanoseconds: 200_000_000)
@@ -370,7 +370,16 @@ final class ProcessesStore: ObservableObject {
         await refresh()
         let cutoff = now.addingTimeInterval(-Double(hours) * 3600)
         // Auto-Sweep is automatic too: never databases, tmux/screen or tunnels.
-        let targets = leftovers.filter { $0.autoStopExemption == nil && orphanedSince($0) <= cutoff }
+        return leftovers.filter { $0.autoStopExemption == nil && orphanedSince($0) <= cutoff }
+    }
+
+    /// Gracefully stops leftovers orphaned for at least `hours` (used by Auto-Sweep).
+    /// Refreshes first so the list is current. Returns how many were stopped and the memory freed.
+    /// `onlyIDs`: Ask first, the leftovers the user approved; any others wait.
+    func stopLeftovers(orphanedForAtLeast hours: Int, onlyIDs: Set<String>? = nil,
+                       now: Date = Date()) async -> (count: Int, bytes: UInt64) {
+        var targets = await leftoversDue(orphanedForAtLeast: hours, now: now)
+        if let onlyIDs { targets = targets.filter { onlyIDs.contains($0.id) } }
         guard !targets.isEmpty else { return (0, 0) }
         let bytes = await stop(targets, signal: SIGTERM, automatic: true)
         let stopped = targets.filter { !stubbornLeftoverIDs.contains($0.id) }.count

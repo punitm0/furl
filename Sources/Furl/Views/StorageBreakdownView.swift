@@ -375,7 +375,7 @@ struct StorageSliceExplainer: View {
         case .purgeable:
             return "Usually nothing to do: \(bytes(snapshot.purgeableBytes)) already counts as available, and macOS clears it when space runs low."
         case .other:
-            return "This is mostly your own data, so Furl doesn't clean it automatically. Large Files, Smart Review and Space Map help you find what's big and what you no longer need."
+            return "This is mostly your own data, so Furl doesn't clean it automatically. Large Files, Smart Review and Disk help you find what's big and what you no longer need."
         case .free:
             let total = max(snapshot.totalBytes, state.diskUsage.totalBytes)
             let percent = total > 0 ? Int((Double(entry.bytes) / Double(total) * 100).rounded()) : 0
@@ -403,7 +403,7 @@ struct StorageSliceExplainer: View {
             return [
                 Destination(section: .largeFiles, detail: size(state.totalLargeFilesBytes, state.hasScannedLargeFiles)),
                 Destination(section: .smartReview, detail: nil),
-                Destination(section: .spaceMap, detail: nil)
+                Destination(section: .disk, detail: nil)
             ]
         }
     }

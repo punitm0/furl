@@ -49,44 +49,6 @@ struct AppFootprintRow: View {
     }
 }
 
-/// Last row of the list: leftovers of apps that are already gone.
-struct LeftoversSummaryRow: View {
-    let appCount: Int
-    let bytes: Int64
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(FootprintCategory.app.color)
-                    .frame(width: 36, height: 36)
-                    .overlay(Image(systemName: "shippingbox").foregroundStyle(Theme.surface))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Leftovers of deleted apps")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.ink)
-                    Text(appCount == 1 ? "1 app" : "\(appCount) apps")
-                        .font(Theme.caption)
-                        .foregroundStyle(Theme.inkSecondary)
-                }
-                Spacer(minLength: 8)
-                Text(FileSizeHelper.formatBytes(bytes))
-                    .font(.system(size: 14, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.ink)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 11)
-            .background(hovering ? Theme.surfaceSubtle : Color.clear)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-    }
-}
-
 // MARK: - Footprint breakdown
 
 /// Stacked bar of an app's footprint, one segment per category.
@@ -200,7 +162,7 @@ struct AppFootprintDetail: View {
                         .foregroundStyle(Theme.inkSecondary)
                 }
                 if slice.category.isRebuildable {
-                    BadgeView(text: "Rebuildable", color: Theme.sweep, help: "The app recreates these when it needs them.")
+                    RiskChip(tier: .safe, help: "Safe: the app recreates these when it needs them.")
                 }
                 Spacer()
                 Text(FileSizeHelper.formatBytes(slice.bytes))

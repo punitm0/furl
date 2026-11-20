@@ -1,42 +1,62 @@
 import SwiftUI
 
+/// The open confirm sheet: removed-app data, or uninstalling an app (with an app-only choice).
+private enum PendingConfirm: Identifiable {
+    case removed(RemovedApps.Confirm)
+    case uninstall(InstalledAppItem, RemovedApps.Confirm, appOnly: RemovedApps.Confirm?)
+
+    var confirm: RemovedApps.Confirm {
+        switch self {
+        case .removed(let c), .uninstall(_, let c, _): return c
+        }
+    }
+
+    var id: String { confirm.paths.joined(separator: "\n") }
+}
+
 @MainActor
 private final class AppUninstallerViewModel: ObservableObject {
-    enum Mode: String, CaseIterable, Identifiable {
-        case footprint = "Footprint"
-        case unused = "Unused 90+ days"
-        case orphaned = "Leftovers"
+    /// AppsOneList board: one list, with long-unused apps as a filter instead of a tab.
+    enum Filter: String, CaseIterable, Identifiable {
+        case all = "All apps"
+        case unused = "Not opened in 90+ days"
         var id: String { rawValue }
     }
 
     enum SortOrder: String, CaseIterable, Identifiable {
         case size = "Total size"
-        case lastUsed = "Last used"
+        case lastOpened = "Last opened"
         case name = "Name"
         var id: String { rawValue }
     }
 
-    @Published var mode: Mode = .footprint
+    @Published var filter: Filter = .all
     @Published var searchText = ""
     @Published var selectedAppID: String?
+    /// Set when a removed app is picked in the list; the detail then shows its folders.
+    @Published var selectedRemovedID: String?
     @Published var selectedDataIDs = Set<String>()
-    @Published var appToUninstall: InstalledAppItem?
     @Published var appToClearCaches: InstalledAppItem?
-    @Published var orphanedGroupToClear: OrphanedAppDataGroup?
-    @Published var confirmClearAllOrphans = false
-    @Published var confirmClearSelectedOrphans = false
-    @Published var selectedOrphanItemIDs = Set<String>()
-    @Published var expandedOrphanGroupIDs = Set<String>()
+    @Published var pendingConfirm: PendingConfirm?
+    @Published var tickedRemovedIDs = Set<String>()
+    /// Ticks "Select sure matches" made, so a rescan can drop any that no longer qualify.
+    var autoTickedIDs = Set<String>()
+    @Published var showAllRemoved = false
     @Published var sortOrder: SortOrder = .size
+    /// The sort to go back to when the 90+ days filter is turned off.
+    var sortBeforeFilter: SortOrder = .size
 }
 
 struct AppUninstallerView: View {
     @ObservedObject var state: AppState
     @StateObject private var vm = AppUninstallerViewModel()
 
+    /// AppsOneList board: four removed apps show before "N more removed apps".
+    private static let removedPreviewCount = 4
+
     private var filteredApps: [InstalledAppItem] {
         let matches = state.installedApps.filter { app in
-            (vm.mode != .unused || app.isUnused90Days)
+            (vm.filter != .unused || app.isUnused90Days)
                 && (vm.searchText.isEmpty
                     || app.name.localizedCaseInsensitiveContains(vm.searchText)
                     || app.bundleIdentifier.localizedCaseInsensitiveContains(vm.searchText))
@@ -46,8 +66,8 @@ struct AppUninstallerView: View {
             return matches.sorted { $0.totalSizeBytes > $1.totalSizeBytes }
         case .name:
             return matches.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        case .lastUsed:
-            // Least recently used first; apps macOS has no date for go last.
+        case .lastOpened:
+            // Least recently opened first; apps macOS has no date for go last.
             return matches.sorted { a, b in
                 switch (a.lastOpenedDate, b.lastOpenedDate) {
                 case let (x?, y?): return x == y ? a.totalSizeBytes > b.totalSizeBytes : x < y
@@ -63,30 +83,37 @@ struct AppUninstallerView: View {
         state.installedApps.filter(\.isUnused90Days).count
     }
 
-    private var selectedOrphanItems: [AppDataItem] {
-        state.orphanedGroups.flatMap(\.items).filter { vm.selectedOrphanItemIDs.contains($0.id) }
-    }
-
-    private var selectedOrphanBytes: Int64 {
-        selectedOrphanItems.reduce(0) { $0 + $1.sizeBytes }
-    }
-
-    private var filteredOrphans: [OrphanedAppDataGroup] {
-        state.orphanedGroups.filter { group in
+    /// The removed-apps group, hidden while the 90+ days filter is on.
+    private var filteredRemoved: [OrphanedAppDataGroup] {
+        guard vm.filter == .all else { return [] }
+        return state.orphanedGroups.filter { group in
             vm.searchText.isEmpty
                 || group.displayName.localizedCaseInsensitiveContains(vm.searchText)
                 || group.appIdentifier.localizedCaseInsensitiveContains(vm.searchText)
         }
     }
 
+    /// Ticked folders of the removed apps in the list right now (a search hides the rest), for the
+    /// bar under the group. Board: each button acts only on what sits next to it.
+    private var tickedRemoved: [(group: OrphanedAppDataGroup, items: [AppDataItem])] {
+        RemovedApps.ticked(vm.tickedRemovedIDs, in: filteredRemoved)
+    }
+
+    private var selectedRemoved: OrphanedAppDataGroup? {
+        guard let id = vm.selectedRemovedID else { return nil }
+        return filteredRemoved.first { $0.id == id }
+    }
+
     private var selectedApp: InstalledAppItem? {
         filteredApps.first { $0.id == vm.selectedAppID } ?? filteredApps.first
     }
 
+    private var toTrash: Bool { state.deletionMode == .moveToTrash }
+
     var body: some View {
         VStack(spacing: 0) {
-            ScreenHeader(title: "Apps & Leftovers", subtitle: "Each app's full footprint — the app plus its caches, data and settings in ~/Library.") {
-                HeaderSearchField(text: $vm.searchText, prompt: "Search apps or bundle IDs")
+            ScreenHeader(title: "Apps & Leftovers", subtitle: "Each app with its caches, data and settings, plus data from apps you removed.") {
+                HeaderSearchField(text: $vm.searchText, prompt: "Search apps")
             }
             toolbarBar
 
@@ -106,48 +133,34 @@ struct AppUninstallerView: View {
                     Task { await state.scanApps() }
                 }
             } else {
-                switch vm.mode {
-                case .footprint, .unused:
-                    installedAppsContent
-                case .orphaned:
-                    orphanedDataContent
-                }
+                listContent
             }
         }
         .navigationTitle("Apps & Leftovers")
         .cleanSlateScreen()
-        .confirmationDialog(
-            "Uninstall \(vm.appToUninstall?.name ?? "App")?",
-            isPresented: Binding(
-                get: { vm.appToUninstall != nil },
-                set: { if !$0 { vm.appToUninstall = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let app = vm.appToUninstall {
-                let dataItems = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }
-                let dataPaths = dataItems.map(\.path)
-                let total = app.appSizeBytes + dataItems.reduce(0) { $0 + $1.sizeBytes }
-
-                if !dataPaths.isEmpty {
-                    Button("Uninstall App + \(dataPaths.count) Data Item(s) (\(FileSizeHelper.formatBytes(total)))", role: .destructive) {
-                        uninstall(app, dataPaths: dataPaths)
-                    }
-                }
-                Button("Uninstall App Only (\(FileSizeHelper.formatBytes(app.appSizeBytes)))", role: .destructive) {
-                    uninstall(app, dataPaths: [])
-                }
-                Button("Cancel", role: .cancel) {
-                    vm.appToUninstall = nil
-                }
+        .onChange(of: vm.filter) { _, filter in
+            // AppsOneList: sort switches to Last opened while the filter is on, and back when it's off.
+            if filter == .unused {
+                vm.sortBeforeFilter = vm.sortOrder
+                vm.sortOrder = .lastOpened
+            } else {
+                vm.sortOrder = vm.sortBeforeFilter
             }
-        } message: {
-            if let app = vm.appToUninstall {
-                let destination = state.deletionMode == .moveToTrash ? "moved to the Trash, so you can undo" : "deleted permanently"
-                Text(app.isRunning
-                     ? "\(app.name) is running and will be quit first. Everything is \(destination)."
-                     : "Folders marked \u{201C}Possible match\u{201D} aren't included unless you tick them. Everything is \(destination).")
-            }
+            if selectedRemoved == nil { vm.selectedRemovedID = nil }
+        }
+        .onChange(of: state.orphanedGroups) { _, groups in
+            // Drop ticks for folders that are gone, and auto-ticks that are no longer sure and Safe.
+            vm.tickedRemovedIDs.formIntersection(Set(groups.flatMap(\.items).map(\.id)))
+            let stale = RemovedApps.staleAutoTicks(vm.autoTickedIDs, in: groups)
+            vm.tickedRemovedIDs.subtract(stale)
+            vm.autoTickedIDs.subtract(stale)
+        }
+        .onChange(of: vm.tickedRemovedIDs) { _, ticked in
+            // A folder the user unticks stops counting as auto-ticked.
+            vm.autoTickedIDs.formIntersection(ticked)
+        }
+        .sheet(item: $vm.pendingConfirm) { pending in
+            confirmSheet(pending)
         }
         .confirmationDialog(
             "Clear caches and logs for \(vm.appToClearCaches?.name ?? "")?",
@@ -172,57 +185,44 @@ struct AppUninstallerView: View {
                      + (app.isRunning ? " It's running now — quitting it first is safest." : ""))
             }
         }
-        .confirmationDialog(
-            "Clear data for \(vm.orphanedGroupToClear?.displayName ?? "")?",
-            isPresented: Binding(
-                get: { vm.orphanedGroupToClear != nil },
-                set: { if !$0 { vm.orphanedGroupToClear = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let group = vm.orphanedGroupToClear {
-                Button("Clear \(group.items.count) \(group.items.count == 1 ? "Item" : "Items") (\(FileSizeHelper.formatBytes(group.totalSizeBytes)))", role: .destructive) {
-                    Task {
-                        await state.clearOrphanedGroup(group)
-                        vm.orphanedGroupToClear = nil
-                    }
+    }
+
+    @ViewBuilder
+    private func confirmSheet(_ pending: PendingConfirm) -> some View {
+        switch pending {
+        case .removed(let confirm):
+            RemovedAppsConfirmSheet(confirm: confirm) {
+                vm.pendingConfirm = nil
+                trashRemoved(confirm)
+            } onCancel: {
+                vm.pendingConfirm = nil
+            }
+        case let .uninstall(app, confirm, appOnly):
+            RemovedAppsConfirmSheet(
+                confirm: confirm,
+                secondaryTitle: appOnly.map { "App only (\(FileSizeHelper.formatBytes($0.totalBytes)))" },
+                onSecondary: {
+                    vm.pendingConfirm = nil
+                    uninstall(app, dataPaths: [])
                 }
-                Button("Cancel", role: .cancel) {
-                    vm.orphanedGroupToClear = nil
-                }
+            ) {
+                vm.pendingConfirm = nil
+                uninstall(app, dataPaths: Array(confirm.paths.dropFirst()))
+            } onCancel: {
+                vm.pendingConfirm = nil
             }
-        }
-        .confirmationDialog(
-            "Clear \(selectedOrphanItems.count) selected leftover \(selectedOrphanItems.count == 1 ? "item" : "items")?",
-            isPresented: $vm.confirmClearSelectedOrphans,
-            titleVisibility: .visible
-        ) {
-            Button("\(state.deletionMode.rawValue) (\(FileSizeHelper.formatBytes(selectedOrphanBytes)))", role: .destructive) {
-                let items = selectedOrphanItems
-                vm.selectedOrphanItemIDs.removeAll()
-                Task { await state.clearOrphanedItems(items, label: "leftover item(s)") }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Make sure these really belong to apps you've removed. Some apps keep data in ~/Library under a different name.")
-        }
-        .confirmationDialog(
-            "Clear all \(state.orphanedGroups.count) orphaned app data groups?",
-            isPresented: $vm.confirmClearAllOrphans,
-            titleVisibility: .visible
-        ) {
-            Button("Clear All (\(FileSizeHelper.formatBytes(state.totalOrphanedAppDataBytes)))", role: .destructive) {
-                vm.selectedOrphanItemIDs.removeAll()
-                Task { await state.clearAllOrphanedData() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Leftover detection is heuristic. Review the list first — some apps keep data under names that don't match their bundle.")
         }
     }
 
+    /// Board: every confirm lists what goes, with sizes, and says where it goes.
+    private func confirmUninstall(_ app: InstalledAppItem) {
+        let data = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }
+        let confirm = RemovedApps.uninstall(app, data: data, toTrash: toTrash)
+        let appOnly = data.isEmpty ? nil : RemovedApps.uninstall(app, data: [], toTrash: toTrash)
+        vm.pendingConfirm = .uninstall(app, confirm, appOnly: appOnly)
+    }
+
     private func uninstall(_ app: InstalledAppItem, dataPaths: [String]) {
-        vm.appToUninstall = nil
         guard app.allowsFootprintActions, AppFootprintSafety.isAllowed(app.bundlePath) else {
             ErrorLog.shared.redact(app.name)
             state.errorBanner = "\(app.name) is outside /Applications or managed by macOS, so it can't be removed here."
@@ -233,43 +233,46 @@ struct AppUninstallerView: View {
         Task { await state.uninstallApp(app, includeDataPaths: paths) }
     }
 
-    private func tabTitle(_ mode: AppUninstallerViewModel.Mode) -> String {
-        guard state.hasScannedApps else { return mode.rawValue }
-        switch mode {
-        case .footprint: return mode.rawValue
-        case .unused: return "\(mode.rawValue) · \(unusedCount)"
-        case .orphaned: return "\(mode.rawValue) · \(state.orphanedGroups.count)"
+    /// Opens the confirm for exactly these ticked folders, built from the current scan.
+    private func confirmTrashRemoved(_ picks: [(group: OrphanedAppDataGroup, items: [AppDataItem])]) {
+        if let confirm = RemovedApps.confirm(for: picks, toTrash: toTrash) {
+            vm.pendingConfirm = .removed(confirm)
         }
     }
 
-    /// One row when it fits; otherwise the Leftovers actions drop to a second row instead of
-    /// pushing the window wider than it is (which blanked the whole split view).
+    /// Moves what the confirm listed, and only that. Each path is checked again here (still a
+    /// ~/Library app-data folder, still in the scan) and by `clearOrphanedItems` (unchanged since
+    /// the scan, not protected) right before it moves.
+    private func trashRemoved(_ confirm: RemovedApps.Confirm) {
+        let allowed = Set(AppFootprintSafety.sanitize(confirm.paths))
+        let items = state.orphanedGroups.flatMap(\.items).filter { allowed.contains($0.path) }
+        vm.tickedRemovedIDs.subtract(items.map(\.id))
+        guard !items.isEmpty else { return }
+        Task { await state.clearOrphanedItems(items, label: "folder(s) from removed apps") }
+    }
+
+    private func filterTitle(_ filter: AppUninstallerViewModel.Filter) -> String {
+        guard filter == .unused, state.hasScannedApps else { return filter.rawValue }
+        return "\(filter.rawValue) · \(unusedCount)"
+    }
+
+    /// One row when it fits; on a narrow page the filter gets its own row so the bar never
+    /// overflows both edges.
     private var toolbarBar: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
-                toolbarTabs
+                filterTabs
+                sortPicker
                 Spacer(minLength: 12)
-                toolbarActions(spacing: 12)
                 toolbarRescan
             }
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    toolbarTabs
-                    Spacer(minLength: 8)
-                    toolbarRescan
-                }
-                toolbarActionsRow
-            }
-            // Narrower still (the cleanup tray open beside a small window): the tabs get their own
-            // row, so the bar never overflows both edges of the page.
-            VStack(alignment: .leading, spacing: 8) {
-                pillTabs
+                filterTabs
                 HStack(spacing: 8) {
                     sortPicker
                     Spacer(minLength: 8)
                     toolbarRescan
                 }
-                toolbarActionsRow
             }
         }
         .padding(.horizontal, Theme.Space.page)
@@ -278,69 +281,15 @@ struct AppUninstallerView: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.border).frame(height: 1) }
     }
 
-    private var toolbarTabs: some View {
-        HStack(spacing: 12) {
-            pillTabs
-            sortPicker
-        }
-    }
-
-    private var pillTabs: some View {
-        PillTabs(tabs: AppUninstallerViewModel.Mode.allCases, selection: $vm.mode, title: tabTitle)
+    private var filterTabs: some View {
+        PillTabs(tabs: AppUninstallerViewModel.Filter.allCases, selection: $vm.filter, title: filterTitle)
             .fixedSize()
     }
 
-    @ViewBuilder
     private var sortPicker: some View {
-        if vm.mode != .orphaned {
-            SweepMenuPicker(label: "Sort by", options: AppUninstallerViewModel.SortOrder.allCases,
-                            selection: $vm.sortOrder, title: \.rawValue)
-            .help("Last used puts the apps you haven't opened for longest first")
-        }
-    }
-
-    /// The Leftovers actions on their own row, right-aligned, in the stacked toolbars.
-    @ViewBuilder
-    private var toolbarActionsRow: some View {
-        if vm.mode == .orphaned && !state.orphanedGroups.isEmpty {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                toolbarActions(spacing: 8)
-            }
-        }
-    }
-
-    /// 12pt apart on the one-row toolbar, 8pt on the narrow second row (Leftovers board).
-    @ViewBuilder
-    private func toolbarActions(spacing: CGFloat) -> some View {
-        if vm.mode == .orphaned && !state.orphanedGroups.isEmpty {
-            HStack(spacing: spacing) {
-                AddToTrayButton(count: selectedOrphanItems.count) {
-                    CleanupTray.shared.add(state.orphanedGroups.flatMap { group in
-                        group.items.filter { vm.selectedOrphanItemIDs.contains($0.id) }
-                            .map { TrayItem.leftover($0, appName: group.displayName) }
-                    })
-                }
-                .fixedSize()
-                .disabled(state.isCleaning)
-                Button(role: .destructive) {
-                    vm.confirmClearSelectedOrphans = true
-                } label: {
-                    Text(selectedOrphanBytes > 0 ? "Clear Selected \(FileSizeHelper.formatBytes(selectedOrphanBytes))" : "Clear Selected")
-                        .monospacedDigit()
-                }
-                .buttonStyle(SweepButtonStyle(kind: .primary, height: 28))
-                .fixedSize()
-                .disabled(selectedOrphanItems.isEmpty || state.isCleaning)
-
-                Button("Clear All…", role: .destructive) {
-                    vm.confirmClearAllOrphans = true
-                }
-                .buttonStyle(SweepButtonStyle(kind: .secondary, height: 28))
-                .fixedSize()
-                .disabled(state.isCleaning)
-            }
-        }
+        SweepMenuPicker(label: "Sort by", options: AppUninstallerViewModel.SortOrder.allCases,
+                        selection: $vm.sortOrder, title: \.rawValue)
+        .help("Last opened puts the apps you haven't opened for longest first")
     }
 
     private var toolbarRescan: some View {
@@ -365,45 +314,42 @@ struct AppUninstallerView: View {
     }
 
     private func select(_ app: InstalledAppItem) {
+        vm.selectedRemovedID = nil
         vm.selectedAppID = app.id
         vm.selectedDataIDs = Set(app.associatedData.filter(\.isStrongMatch).map(\.id))
     }
 
-    private var installedAppsContent: some View {
+    private var listContent: some View {
         Group {
-            if filteredApps.isEmpty {
+            if filteredApps.isEmpty && filteredRemoved.isEmpty {
                 EmptyStatePlaceholder(
-                    systemImage: vm.mode == .unused ? "checkmark.seal" : "magnifyingglass",
-                    title: vm.mode == .unused && vm.searchText.isEmpty ? "No Long-Unused Apps" : "No Matching Apps",
-                    message: vm.mode == .unused && vm.searchText.isEmpty
+                    systemImage: vm.filter == .unused ? "checkmark.seal" : "magnifyingglass",
+                    title: vm.filter == .unused && vm.searchText.isEmpty ? "No Long-Unused Apps" : "No Matching Apps",
+                    message: vm.filter == .unused && vm.searchText.isEmpty
                         ? "Every app with a known last-opened date was used in the last 90 days."
-                        : "No installed app matches your search."
+                        : "No app matches your search."
                 )
             } else {
-                // List (340) beside the details (at least 460). A page narrower than that (the
+                // List (360) beside the details (at least 460). A page narrower than that (the
                 // cleanup tray open, or a small window) overflowed both edges; there the details
                 // go under the list and the two share the height.
                 ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 20) {
+                    HStack(alignment: .top, spacing: 18) {
                         appList
-                            .frame(width: 340)
-                        if let app = selectedApp {
-                            appDetail(app)
-                                .frame(minWidth: 460, idealWidth: 460, maxWidth: .infinity)
-                                .layoutPriority(1)
-                        }
+                            .frame(width: 360)
+                        detail
+                            .frame(minWidth: 460, idealWidth: 460, maxWidth: .infinity)
+                            .layoutPriority(1)
                     }
                     VStack(spacing: 16) {
                         appList
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if let app = selectedApp {
-                            appDetail(app)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                        detail
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
                 .padding(.horizontal, Theme.Space.page)
-                .padding(.vertical, 20)
+                .padding(.vertical, 18)
                 .onAppear {
                     if vm.selectedAppID == nil, let first = filteredApps.first { select(first) }
                 }
@@ -411,11 +357,11 @@ struct AppUninstallerView: View {
                     if let current = newApps.first(where: { $0.id == vm.selectedAppID }) {
                         // Keep the user's ticks, minus folders that are gone.
                         vm.selectedDataIDs.formIntersection(Set(current.associatedData.map(\.id)))
-                    } else if let first = filteredApps.first {
+                    } else if vm.selectedRemovedID == nil, let first = filteredApps.first {
                         select(first)
                     }
                 }
-                .onChange(of: vm.mode) { _, _ in
+                .onChange(of: vm.filter) { _, _ in
                     if !filteredApps.contains(where: { $0.id == vm.selectedAppID }), let first = filteredApps.first {
                         select(first)
                     }
@@ -424,36 +370,72 @@ struct AppUninstallerView: View {
         }
     }
 
-    private func appDetail(_ app: InstalledAppItem) -> some View {
-        AppFootprintDetail(
-            app: app,
-            selectedDataIDs: $vm.selectedDataIDs,
-            isBusy: state.isCleaning,
-            onClearRebuildable: { vm.appToClearCaches = app },
-            onUninstall: { vm.appToUninstall = app },
-            onAddToTray: {
-                let dataPaths = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }.map(\.path)
-                CleanupTray.shared.add([TrayItem.app(app, dataPaths: dataPaths)])
-            }
-        )
+    @ViewBuilder
+    private var detail: some View {
+        if let group = selectedRemoved {
+            let picks = RemovedApps.ticked(vm.tickedRemovedIDs, in: [group])
+            RemovedAppDetail(
+                group: group,
+                ticked: $vm.tickedRemovedIDs,
+                deletionMode: state.deletionMode,
+                tickedCount: picks.flatMap(\.items).count,
+                tickedBytes: picks.flatMap(\.items).reduce(0) { $0 + $1.sizeBytes },
+                isBusy: state.isCleaning,
+                onAddToTray: { addToTray(picks) },
+                onTrash: { confirmTrashRemoved(picks) }
+            )
+        } else if let app = selectedApp {
+            AppFootprintDetail(
+                app: app,
+                selectedDataIDs: $vm.selectedDataIDs,
+                isBusy: state.isCleaning,
+                onClearRebuildable: { vm.appToClearCaches = app },
+                onUninstall: { confirmUninstall(app) },
+                onAddToTray: {
+                    let dataPaths = app.associatedData.filter { vm.selectedDataIDs.contains($0.id) }.map(\.path)
+                    CleanupTray.shared.add([TrayItem.app(app, dataPaths: dataPaths)])
+                }
+            )
+        }
+    }
+
+    private func addToTray(_ picks: [(group: OrphanedAppDataGroup, items: [AppDataItem])]) {
+        CleanupTray.shared.add(picks.flatMap { pick in
+            pick.items.map { TrayItem.leftover($0, appName: pick.group.shownName) }
+        })
     }
 
     private var appList: some View {
-        ScrollViewReader { proxy in
+        let removed = filteredRemoved
+        let showAll = vm.showAllRemoved || !vm.searchText.isEmpty || removed.count <= Self.removedPreviewCount + 1
+        let shownRemoved = showAll ? removed : Array(removed.prefix(Self.removedPreviewCount))
+        let hidden = removed.dropFirst(shownRemoved.count)
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredApps) { app in
-                        AppFootprintRow(app: app, isSelected: app.id == selectedApp?.id) {
+                        AppFootprintRow(app: app, isSelected: vm.selectedRemovedID == nil && app.id == selectedApp?.id) {
                             select(app)
                         }
                         .id(app.id)
                     }
-                    if vm.mode == .footprint && vm.searchText.isEmpty && !state.orphanedGroups.isEmpty {
-                        LeftoversSummaryRow(
-                            appCount: state.orphanedGroups.count,
-                            bytes: state.totalOrphanedAppDataBytes
-                        ) {
-                            vm.mode = .orphaned
+                    if !removed.isEmpty {
+                        removedHeader
+                        ForEach(shownRemoved) { group in
+                            RemovedAppRow(
+                                group: group,
+                                isSelected: group.id == vm.selectedRemovedID,
+                                ticked: $vm.tickedRemovedIDs
+                            ) {
+                                vm.selectedRemovedID = group.id
+                            }
+                            .id("removed:" + group.id)
+                        }
+                        if !hidden.isEmpty {
+                            moreRemovedButton(count: hidden.count, bytes: hidden.reduce(0) { $0 + $1.totalSizeBytes })
+                        }
+                        if !tickedRemoved.isEmpty {
+                            tickedBar(tickedRemoved)
                         }
                     }
                 }
@@ -470,132 +452,354 @@ struct AppUninstallerView: View {
         )
     }
 
-    private var orphanedDataContent: some View {
-        Group {
-            if filteredOrphans.isEmpty {
-                EmptyStatePlaceholder(
-                    systemImage: "checkmark.seal",
-                    title: "No Orphaned App Data Found",
-                    message: "Leftover folders in ~/Library from uninstalled apps will appear here.",
-                    buttonTitle: "Rescan"
-                ) {
-                    Task { await state.scanApps() }
-                }
-            } else {
-                // Leftovers board: groups collapsed by default, hairline between groups, rows not a List.
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(filteredOrphans.enumerated()), id: \.element.id) { index, group in
-                            orphanGroupRow(group)
-                                .overlay(alignment: .top) {
-                                    if index > 0 { Rectangle().fill(Theme.hairline).frame(height: 1) }
-                                }
-                            if vm.expandedOrphanGroupIDs.contains(group.id) {
-                                ForEach(group.items) { item in
-                                    orphanItemRow(item)
-                                }
-                            }
-                        }
-                    }
-                }
-                .background(Theme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                        .strokeBorder(Theme.border, lineWidth: 1)
-                )
-                .padding(.horizontal, Theme.Space.page)
-                .padding(.vertical, 14)
-            }
-        }
-    }
-
-    private func orphanGroupRow(_ group: OrphanedAppDataGroup) -> some View {
-        let isOpen = vm.expandedOrphanGroupIDs.contains(group.id)
-        let count = group.items.count
-        return HStack(spacing: 10) {
-            Button {
-                if isOpen { vm.expandedOrphanGroupIDs.remove(group.id) } else { vm.expandedOrphanGroupIDs.insert(group.id) }
-            } label: {
-                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Theme.inkSecondary)
-                    .frame(width: 11, height: 11)
-                    .contentShape(Rectangle())
+    /// "REMOVED APPS · 12 · 3.0 GB" with "Select sure matches" on the right.
+    private var removedHeader: some View {
+        let groups = state.orphanedGroups
+        let sure = RemovedApps.sureItemIDs(in: filteredRemoved)
+        return HStack(spacing: 8) {
+            Text("REMOVED APPS · \(groups.count) · \(FileSizeHelper.formatBytes(state.totalOrphanedAppDataBytes))")
+                .font(Theme.sectionLabel)
+                .tracking(0.4)
+                .monospacedDigit()
+                .foregroundStyle(Theme.inkSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+            Button("Select sure matches") {
+                // Ticks only confident matches; a possible match is never ticked here.
+                vm.tickedRemovedIDs.formUnion(sure)
+                vm.autoTickedIDs.formUnion(sure)
+                vm.showAllRemoved = true
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isOpen ? "Hide items" : "Show items")
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(sure.isEmpty ? Theme.inkTertiary : Theme.sweep)
+            .disabled(sure.isEmpty)
+            .help(sure.isEmpty ? "Nothing to tick: no sure match with data the app rebuilds. Tick folders yourself if you're sure."
+                               : "Ticks caches, logs and other data apps rebuild, from removed apps Furl matched by ID. Possible matches and folders that may hold documents stay unticked.")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+        .background(Theme.surfaceSubtle)
+    }
+
+    /// AppsOneList v90: "3 removed apps ticked · 2.3 GB" with Add to Tray and Move to Trash, the route
+    /// to the several-apps confirm. Only shows while something in the group is ticked.
+    private func tickedBar(_ picks: [(group: OrphanedAppDataGroup, items: [AppDataItem])]) -> some View {
+        let bytes = picks.flatMap(\.items).reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let size = FileSizeHelper.formatBytes(bytes)
+        return VStack(alignment: .leading, spacing: 8) {
+            (Text(RemovedApps.tickedSummary(appCount: picks.count)).foregroundColor(Theme.ink).fontWeight(.semibold)
+             + Text(" · \(size)").foregroundColor(Theme.inkSecondary))
+                .font(Theme.caption)
+                .monospacedDigit()
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                AddToTrayButton(count: picks.count, height: 28) { addToTray(picks) }
+                    .fixedSize()
+                    .disabled(state.isCleaning)
+                Button {
+                    confirmTrashRemoved(picks)
+                } label: {
+                    Text(toTrash ? "Move \(size) to Trash" : "Delete \(size)").monospacedDigit()
+                }
+                .buttonStyle(SweepButtonStyle(kind: toTrash ? .primary : .danger, height: 28))
+                .fixedSize()
+                .disabled(state.isCleaning)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(Theme.surfaceSubtle)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.border).frame(height: 1) }
+    }
+
+    private func moreRemovedButton(count: Int, bytes: Int64) -> some View {
+        Button {
+            vm.showAllRemoved = true
+        } label: {
+            Text("\(count) more removed \(count == 1 ? "app" : "apps"), \(FileSizeHelper.formatBytes(bytes))")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Theme.sweep)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 40)
+        .padding(.trailing, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(Theme.surfaceSubtle)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+        .accessibilityHint("Shows every removed app")
+    }
+}
+
+// MARK: - Removed apps
+
+/// One removed app in the list: a checkbox for all its folders, then a button that opens its folders.
+private struct RemovedAppRow: View {
+    let group: OrphanedAppDataGroup
+    let isSelected: Bool
+    @Binding var ticked: Set<String>
+    let onSelect: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let ids = group.items.map(\.id)
+        HStack(spacing: 10) {
             Toggle("", isOn: Binding(
-                get: { group.items.allSatisfy { vm.selectedOrphanItemIDs.contains($0.id) } },
+                get: { !ids.isEmpty && ids.allSatisfy(ticked.contains) },
                 set: { checked in
-                    let ids = group.items.map(\.id)
-                    if checked {
-                        vm.selectedOrphanItemIDs.formUnion(ids)
-                    } else {
-                        vm.selectedOrphanItemIDs.subtract(ids)
-                    }
+                    if checked { ticked.formUnion(ids) } else { ticked.subtract(ids) }
                 }
             ))
             .labelsHidden()
             .toggleStyle(.furlCheckbox)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group.displayName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
-                Text("\(count) leftover \(count == 1 ? "item" : "items") in ~/Library" + (group.latestModified.map { " • last used \($0.relativeDescription)" } ?? ""))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.inkSecondary)
-                    .lineLimit(1)
+            .accessibilityLabel("Include \(group.shownName)")
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(group.shownName)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if !group.isSureMatch {
+                                BadgeView(text: "Possible match", color: Theme.warning,
+                                          help: "This is Furl\u{2019}s best guess. Check that no app you still use needs it.")
+                                    .fixedSize()
+                            }
+                        }
+                        Text(RemovedApps.rowSubtitle(group))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(FileSizeHelper.formatBytes(group.totalSizeBytes))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.ink)
+                }
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if isOpen { vm.expandedOrphanGroupIDs.remove(group.id) } else { vm.expandedOrphanGroupIDs.insert(group.id) }
-            }
-            Text(FileSizeHelper.formatBytes(group.totalSizeBytes))
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundStyle(Theme.ink)
-            Button {
-                vm.orphanedGroupToClear = group
-            } label: {
-                Text("Clear Data").foregroundStyle(Theme.danger)
-            }
-            .buttonStyle(SweepButtonStyle(kind: .secondary, height: 28))
-            .fixedSize()
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityHint("Shows its folders")
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
+        .background(isSelected ? Theme.mintTint : (hovering ? Theme.hairline : Theme.surfaceSubtle))
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+        .onHover { hovering = $0 }
+        .help(group.appIdentifier)
     }
+}
 
-    private func orphanItemRow(_ item: AppDataItem) -> some View {
-        HStack(spacing: 10) {
-            SelectionCheckbox(id: item.id, selection: $vm.selectedOrphanItemIDs)
-            BadgeView(text: item.location.rawValue, color: Theme.memory)
-            Text(item.path)
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.inkSecondary)
+/// Right-hand panel for a removed app: what's left, each folder with a checkbox, Tray and Trash.
+private struct RemovedAppDetail: View {
+    let group: OrphanedAppDataGroup
+    @Binding var ticked: Set<String>
+    let deletionMode: DeletionMode
+    let tickedCount: Int
+    let tickedBytes: Int64
+    let isBusy: Bool
+    let onAddToTray: () -> Void
+    let onTrash: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(group.shownName) · \(FileSizeHelper.formatBytes(group.totalSizeBytes)) left behind")
+                .font(Theme.display(22, weight: .semibold))
+                .foregroundStyle(Theme.ink)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(FileSizeHelper.formatBytes(item.sizeBytes))
-                .font(.system(size: 11, design: .monospaced))
+            Text(intro)
+                .font(Theme.body)
                 .foregroundStyle(Theme.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 10)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(group.items) { item in
+                        folderRow(item)
+                    }
+                }
+            }
+            footer
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        )
+    }
+
+    private var intro: String {
+        let name = group.shownName
+        if group.isSureMatch {
+            let when = group.latestModified.map { " It was last used \(RemovedApps.relative($0))." } ?? ""
+            return "\(name) isn\u{2019}t installed.\(when) These folders match its ID, and Furl found no installed app that uses them."
+        }
+        return "This is Furl\u{2019}s best guess. The name only partly matches, so check that no app you still use needs it."
+    }
+
+    private func folderRow(_ item: AppDataItem) -> some View {
+        HStack(spacing: 10) {
+            SelectionCheckbox(id: item.id, selection: $ticked)
+                .accessibilityLabel("Include \(item.location.rawValue)")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.location.rawValue)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.ink)
+                Text(item.path.abbreviatingHome)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(item.path)
+            // WhySafe board: chip and Why? on every removable row.
+            RiskChip(tier: WhySafe.leftoverTier(item))
+            WhyButton(explanation: WhySafe.leftover(item, group: group, deletionMode: deletionMode))
+            Text(FileSizeHelper.formatBytes(item.sizeBytes))
+                .font(.system(size: 12.5))
+                .monospacedDigit()
+                .foregroundStyle(Theme.ink)
             Button {
                 DeletionService.revealInFinder(item.path)
             } label: {
                 Image(systemName: "folder")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.inkSecondary)
-                    .frame(width: 13, height: 13)
+                    .frame(width: 14, height: 14)
             }
             .buttonStyle(.plain)
             .help("Reveal in Finder")
+            .accessibilityLabel("Reveal in Finder")
         }
-        .padding(.leading, 54)
-        .padding(.trailing, 16)
-        .padding(.vertical, 5)
+        .padding(.vertical, 9)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
         .contentShape(Rectangle())
         .pathContextMenu(item.path, allowOpen: false)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            AddToTrayButton(count: tickedCount, height: 34, action: onAddToTray)
+                .fixedSize()
+                .disabled(tickedCount == 0 || isBusy)
+            Button(action: onTrash) {
+                Text(trashTitle).monospacedDigit()
+            }
+            .buttonStyle(SweepButtonStyle(kind: deletionMode == .moveToTrash ? .primary : .danger, height: 34))
+            .fixedSize()
+            .disabled(tickedCount == 0 || isBusy)
+        }
+        .padding(.top, 14)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+
+    private var trashTitle: String {
+        // Moves only this app's ticked folders; the bar under the group handles several apps.
+        let size = tickedBytes > 0 ? " \(FileSizeHelper.formatBytes(tickedBytes))" : ""
+        return deletionMode == .moveToTrash ? "Move\(size) to Trash" : "Delete\(size)"
+    }
+}
+
+/// AppsOneList confirms, drawn as a macOS alert: app icon, title, one line on where it goes, every
+/// folder or app with its size, then full-width buttons with Cancel as the default, so Return never
+/// moves or deletes anything.
+private struct RemovedAppsConfirmSheet: View {
+    let confirm: RemovedApps.Confirm
+    var secondaryTitle: String? = nil
+    var onSecondary: () -> Void = {}
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 56, height: 56)
+                .accessibilityHidden(true)
+            Text(confirm.title)
+                .font(.system(size: 13, weight: .bold))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(confirm.message)
+                .font(.system(size: 11))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            list
+            VStack(spacing: 8) {
+                Button(action: onConfirm) {
+                    Text(confirm.button).monospacedDigit().frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .foregroundStyle(Color(nsColor: .systemRed))
+                if let secondaryTitle {
+                    Button(action: onSecondary) {
+                        Text(secondaryTitle).monospacedDigit().frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Button(action: onCancel) {
+                    Text("Cancel").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+            .controlSize(.large)
+            .padding(.top, 4)
+        }
+        .padding(.top, 20)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .frame(width: 270)
+        .onExitCommand(perform: onCancel)
+    }
+
+    private var list: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(confirm.lines) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(line.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if let detail = line.detail {
+                                // Folder kinds wrap; they're never cut off.
+                                Text(detail)
+                                    .opacity(0.75)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(FileSizeHelper.formatBytes(line.bytes))
+                            .monospacedDigit()
+                            .fixedSize()
+                    }
+                    .help(line.name)
+                }
+            }
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+        }
+        .frame(maxHeight: 200)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }

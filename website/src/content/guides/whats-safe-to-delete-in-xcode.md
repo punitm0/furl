@@ -12,6 +12,8 @@ tldr:
 updated: 2026-11-18
 ---
 
+In Xcode, DerivedData, old device support files and caches are safe to delete because they rebuild themselves. Unavailable simulators and old runtimes can go too. Keep archives for app versions people still run.
+
 Xcode is often the single biggest thing on a developer's Mac. The app itself is around 12 GB, and everything it creates around it can add another 20 to 50 GB. Most of that rebuilds itself.
 
 ## Safe to delete: DerivedData

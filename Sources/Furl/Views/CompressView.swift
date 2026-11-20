@@ -16,6 +16,8 @@ struct CompressView: View {
     @State private var toolResultShown = false
     /// An install finished mid-scan: that scan detected tools before the install, so scan again once it ends.
     @State private var rescanAfterScan = false
+    /// Cards whose "How" line is open. The folder card starts open, as drawn on the CompressSimple board.
+    @State private var openHow: Set<CompressCategory> = [.folders]
 
     private var dismissedTools: Set<OptionalTool> {
         Set(dismissedToolsRaw.split(separator: ",").compactMap { OptionalTool(rawValue: String($0)) })
@@ -43,7 +45,25 @@ struct CompressView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScreenHeader(title: "Compress", subtitle: "Make files smaller. Choose identical files, or far smaller files at a lower quality.") {
-                EmptyView()
+                // CompressSimple: the hero's scan link is gone; this toolbar Rescan covers it.
+                if mode == .lossless && store.hasScanned {
+                    if store.isScanning {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Scanning…").font(Theme.caption).foregroundStyle(Theme.inkSecondary)
+                        }
+                        .fixedSize()
+                    } else {
+                        Button {
+                            Task { await store.scan() }
+                        } label: {
+                            Label("Rescan", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(ToolbarButtonStyle())
+                        .fixedSize()
+                        .disabled(store.isBusy)
+                    }
+                }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -306,11 +326,6 @@ struct CompressView: View {
                         ProgressView().controlSize(.small)
                         Text(store.phase).font(Theme.micro).foregroundStyle(Theme.inkSecondary).lineLimit(1)
                     }
-                } else {
-                    Button("Scan again") { Task { await store.scan() } }
-                        .buttonStyle(SweepLinkStyle())
-                        .font(Theme.micro)
-                        .disabled(store.isBusy)
                 }
             }
             Spacer(minLength: 12)
@@ -320,13 +335,6 @@ struct CompressView: View {
                     SweepMenuPicker(options: [7, 30, 60, 90, 180, 365], selection: $store.options.minDaysUnused) { "\($0) days" }
                 }
                 Toggle("Keep originals in the Trash for 30 days", isOn: $store.options.keepOriginalsInTrash)
-                Toggle(isOn: $store.options.stripPhotoMetadata) {
-                    HStack(spacing: 6) {
-                        Text("Also strip photo location and camera data")
-                        BadgeView(text: "Not lossless", color: Theme.warning,
-                                  help: "Removes GPS and camera EXIF from photos. Pixels are still verified, but that metadata is gone.")
-                    }
-                }
                 if store.folderScanIsStale {
                     Label("Folders will be re-checked for the new age limit when you start.", systemImage: "arrow.clockwise")
                         .font(Theme.micro)
@@ -360,21 +368,16 @@ struct CompressView: View {
         let summary = store.summary(for: category)
         let available = summary?.available ?? true
         let enabled = store.isEnabled(category) && available
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
+        let howOpen = openHow.contains(category)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
                 Toggle(isOn: Binding(
                     get: { enabled },
                     set: { store.setCategory(category, enabled: $0) }
                 )) {
-                    HStack(spacing: 8) {
-                        Image(systemName: category.systemImage)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Theme.inkSecondary)
-                            .frame(width: 15)
-                        Text(category.title)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Theme.ink)
-                    }
+                    Text(category.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.ink)
                 }
                 .toggleStyle(.furlCheckbox)
                 .disabled(!available || store.isRunning)
@@ -390,20 +393,41 @@ struct CompressView: View {
                         .foregroundStyle(Theme.ink)
                 }
             }
+            .accessibilitySortPriority(4)
             Text(category.summary)
                 .font(Theme.caption)
                 .foregroundStyle(Theme.inkSecondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilitySortPriority(3)
+            if howOpen {
+                Text(howText(category, method: summary?.method))
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.inkTertiary)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
+                    .padding(.top, 4)
+                    .transition(.opacity)
+                    // Drawn above the footer, but read after the How button that reveals it.
+                    .accessibilitySortPriority(1)
+            }
             Spacer(minLength: 0)
-            HStack(spacing: 6) {
+            HStack(spacing: 10) {
                 if let summary {
+                    // The count says what will be touched; clicking it lists those files.
                     Button {
                         listedCategory = category
                     } label: {
-                        Text("\(summary.method) · \(summary.count.formatted()) \(category.unitName)")
+                        Text("\(summary.count.formatted()) \(category.unitName)")
+                            .foregroundStyle(Theme.inkSecondary)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(SweepLinkStyle())
+                    .buttonStyle(.plain)
                     .disabled(summary.count == 0)
                     .help("Show what would be compressed")
                 }
@@ -413,25 +437,54 @@ struct CompressView: View {
                 Spacer()
                 if let note = summary?.note {
                     Text(note)
-                        .font(Theme.micro)
                         .foregroundStyle(available ? Theme.inkSecondary : Theme.warning)
                         .textSelection(.enabled)
                     if !available, let tool = requiredTool(category) {
-                        Text("·").font(Theme.micro).foregroundStyle(Theme.warning)
+                        Text("·").foregroundStyle(Theme.warning)
                         Button("Install \(tool.binaryName)") { installRequired(tool) }
                             .buttonStyle(SweepLinkStyle())
                             .font(Theme.micro.weight(.semibold))
                             .disabled(installer.isRunning || store.isBusy)
                     }
                 }
+                Button(howOpen ? "How ▾" : "How ▸") {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        if howOpen { openHow.remove(category) } else { openHow.insert(category) }
+                    }
+                }
+                .buttonStyle(SweepLinkStyle())
+                .fontWeight(.medium)
+                .accessibilityLabel("How it works: \(category.title)")
+                .accessibilityValue(howOpen ? "Expanded" : "Collapsed")
             }
             .font(Theme.micro)
+            .padding(.top, 6)
+            .accessibilitySortPriority(2)
         }
+        .accessibilityElement(children: .contain)
         .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(16)
         .card(padding: 0)
         .opacity(!available ? 0.6 : (enabled ? 1 : 0.7))
+    }
+
+    /// The method behind each card, in one sentence (CompressSimple: method names live behind "How").
+    private func howText(_ category: CompressCategory, method: String?) -> String {
+        switch category {
+        case .folders:
+            return "macOS’s own file compression (APFS, LZFSE). Files unpack as they’re read, so nothing changes for the apps that use them."
+        case .images:
+            let png = method.flatMap { ["oxipng", "Zopfli"].contains($0) ? $0 : nil } ?? "ImageIO"
+            return "PNGs are saved again with \(png), TIFFs with LZW and GIFs with gifsicle. Each result is compared pixel for pixel with the original."
+        case .pdfs:
+            return "qpdf rebuilds the file with object streams, so repeated parts are stored once. Pages and text are compared with the original."
+        case .jpeg:
+            return "jpegtran repacks the JPEG data without decoding it (lossless optimise). The pixels are compared with the original."
+        case .audio:
+            return "Encoded as Apple Lossless (ALAC) in an .m4a file. Every sample is compared with the original."
+        case .archives:
+            return "The archive is repacked at maximum compression and PNGs inside are saved again losslessly. The contents are compared with the original."
+        }
     }
 
     /// What each category is estimated to save right now (0 when it can't run).
@@ -667,7 +720,6 @@ struct CompressView: View {
                      ? "Originals go to the Trash, so you can undo."
                      : "Originals will be deleted permanently once each copy is verified. This can't be undone.")
         if store.isEnabled(.audio) { lines.append("WAV and AIFF files will become Apple Lossless .m4a files.") }
-        if store.options.stripPhotoMetadata { lines.append("Photo location and camera data will be removed.") }
         return lines.joined(separator: "\n\n")
     }
 }
