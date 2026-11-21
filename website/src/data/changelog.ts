@@ -28,11 +28,32 @@ export type Release = {
 
 export const releases: Release[] = [
   {
+    version: "1.4.0",
+    date: "21 November 2026",
+    title: "First ten minutes",
+    lead: "Installing, the first scan and the first clean are shorter and calmer.",
+    meta: "macOS 14 or later · Apple silicon and Intel · 13 MB",
+    new: [
+      { lead: "Move to Applications", text: "Opened from the disk image or Downloads, Furl offers to move itself to Applications, then ejects the disk image. Replacing an older copy moves it to the Trash first." },
+      { lead: "Welcome", text: "First launch is two short screens: Furl's two promises, then Full Disk Access with the same steps as the website. Without it, each screen says calmly that totals will be lower." },
+      { lead: "First scan", text: "Results show as each area finishes. The first safe number now appears in seconds instead of after the whole scan." },
+      { lead: "First clean", text: "An optional first clean moves three safe items to the Trash and shows Undo putting them back." },
+      { lead: "Developer tools", text: "Apps & Leftovers lists old Node, Python and Rust versions no project uses, older Homebrew versions, and packages you installed but may not need. Nothing is ticked that can't go to the Trash." },
+      { lead: "App leftovers", text: "Drag an app to the Trash and Furl offers to remove what it left behind." },
+      { lead: "Shortcuts", text: "Stop Leftover Servers and Tidy Project join the Shortcuts app. Each asks first." },
+    ],
+    improved: [
+      { lead: "Trash", text: "The Overview shows how much of the Trash Furl put there. Empty Furl's Items deletes only those, and the old Empty Trash card is gone." },
+      { lead: "Git Worktrees", text: "Merged worktrees start unticked, because removing one is permanent. Clean safe items in the menu bar leaves them out." },
+      { lead: "Menu bar", text: "Closing the window keeps Furl running in the menu bar. You can turn this off in Settings." },
+      { lead: "What's new", text: "After an update, Furl shows one sentence per change, once." },
+    ],
+  },
+  {
     version: "1.3.0",
     date: "20 November 2026",
     title: "Get space back",
     lead: "One honest number to clean, a reason on every row, and simpler screens.",
-    meta: "macOS 14 or later · Apple silicon and Intel · 10 MB",
     new: [
       { lead: "Get space back", text: "The Overview shows only what's safe to clean now and moves exactly that to the Trash in one step, with one Undo. The menu bar and the low-disk alert show the same number." },
       { lead: "Why it's safe", text: "Every row says Safe, Check first or Permanent, and a Why? button explains what it is and whether it comes back." },

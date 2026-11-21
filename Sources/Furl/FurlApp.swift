@@ -46,7 +46,13 @@ enum AppServices {
         notifications.onSwitchToAutomatic = {
             autoSweep.setMode(.automatic)
         }
+        notifications.onReviewLeftovers = { bundleID, name in
+            TrashLeftoversNotifier.shared.review(bundleID: bundleID, name: name, state: state)
+        }
         notifications.configure()
+        TrashLeftoversNotifier.shared.start()
+        // Decided at launch, after FullDiskAccess has recorded this version.
+        _ = WhatsNewStore.shared
         ProcessesStore.shared.startBackgroundMonitoring()
         ProcessesIntegration.connect(to: autoSweep)
         ActivityLog.shared.connect(compress: compress)
@@ -165,6 +171,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             AppServices.start()
             DockIcon.start()
+            // InstallHandoff board: offer to move to Applications before onboarding asks for anything.
+            InstallHandoff.shared.runLaunchCheck()
+            // WelcomeAccess: Full Disk Access goes to the copy in Applications, so Welcome waits until the
+            // move offer is settled. While Furl moves itself this never returns; that copy quits.
+            OnboardingStore.shared.beforeAccessStep = {
+                for await settled in InstallHandoff.shared.$isSettled.values where settled { return true }
+                return false
+            }
             NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: nil, queue: .main
             ) { _ in

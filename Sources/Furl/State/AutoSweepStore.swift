@@ -30,13 +30,18 @@ struct TrashLedgerEntry: Codable, Hashable, Sendable {
     /// Size when trashed. Counted as freed (StatsLedger) once the item leaves the Trash for good.
     /// Nil for entries recorded before sizes were kept; those are never counted.
     let bytes: Int64?
+    /// Kind and modification date in the Trash, read when Furl moved it. Nil for entries recorded
+    /// before 1.4.0; "Empty Furl's items" never deletes those (it can't confirm them).
+    let stamp: CleanupStamp?
 
-    init(originalPath: String, trashPath: String, date: Date, fileID: UInt64? = nil, bytes: Int64? = nil) {
+    init(originalPath: String, trashPath: String, date: Date, fileID: UInt64? = nil, bytes: Int64? = nil,
+         stamp: CleanupStamp? = nil) {
         self.originalPath = originalPath
         self.trashPath = trashPath
         self.date = date
         self.fileID = fileID ?? Self.currentFileID(trashPath)
         self.bytes = bytes
+        self.stamp = stamp
     }
 
     static func currentFileID(_ path: String) -> UInt64? {
@@ -65,7 +70,7 @@ struct TrashLedgerEntry: Codable, Hashable, Sendable {
     }
 
     var asTrashedItem: TrashedItem {
-        TrashedItem(originalPath: originalPath, trashPath: trashPath, sizeBytes: bytes ?? 0, fileID: fileID)
+        TrashedItem(originalPath: originalPath, trashPath: trashPath, sizeBytes: bytes ?? 0, fileID: fileID, stamp: stamp)
     }
 }
 
@@ -419,7 +424,7 @@ final class AutoSweepStore: ObservableObject {
 
         showMenuBarItem = bool(Keys.showMenuBarItem, true)
         showFreeSpaceInMenuBar = bool(Keys.showFreeSpace, true)
-        keepRunningInMenuBar = bool(Keys.keepRunning, false)
+        keepRunningInMenuBar = bool(Keys.keepRunning, true)
         let migrated = Self.migrateTrustSettings(d)
         mode = migrated.mode
         trustLadder = AutoSweepTrustLadder(approvedInARow: int(Keys.approvedInARow, 0),
@@ -612,12 +617,21 @@ final class AutoSweepStore: ObservableObject {
     /// Remember items Furl moved to the Trash (from any section), so "Empty Trash items older
     /// than N days" only ever touches Furl's own items.
     func recordTrashed(_ items: [TrashedItem], date: Date = Date()) {
-        let known = Set(ledger.map(\.trashPath))
-        let new = items.filter { !known.contains($0.trashPath) }
-            .map { TrashLedgerEntry(originalPath: $0.originalPath, trashPath: $0.trashPath, date: date, bytes: $0.sizeBytes) }
+        let known = Set(ledger.map { LedgerKey(path: $0.trashPath, fileID: $0.fileID) })
+        let new = items.filter { !known.contains(LedgerKey(path: $0.trashPath, fileID: $0.fileID ?? TrashLedgerEntry.currentFileID($0.trashPath))) }
+            .map { TrashLedgerEntry(originalPath: $0.originalPath, trashPath: $0.trashPath, date: date,
+                                    fileID: $0.fileID, bytes: $0.sizeBytes, stamp: $0.stamp) }
         guard !new.isEmpty else { return }
+        // Finder reuses Trash names: an older entry for the same name is about a different item now.
+        let replaced = Set(new.map(\.trashPath))
+        ledger.removeAll { replaced.contains($0.trashPath) }
         ledger.append(contentsOf: new)
         saveLedger()
+    }
+
+    private struct LedgerKey: Hashable {
+        let path: String
+        let fileID: UInt64?
     }
 
     /// Drop entries whose item has left the Trash. One that was emptied (in Finder, say) rather than

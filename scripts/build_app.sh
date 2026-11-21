@@ -71,7 +71,7 @@ if [[ ! -f "$ICON_PATH" ]]; then
   swift "$ROOT_DIR/scripts/make_icon.swift" "$ICON_PATH"
 fi
 cp "$ICON_PATH" "$RESOURCES_DIR/AppIcon.icns"
-# GPLv3: the licence travels with the binary.
+# MIT: the licence travels with the binary.
 cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
 
 cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
@@ -94,13 +94,13 @@ cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.0</string>
+    <string>1.4.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>5</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright (C) 2026 Furl. GPL-3.0-or-later. No warranty.</string>
+    <string>Copyright (c) 2026 Punit Makwana. MIT License.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

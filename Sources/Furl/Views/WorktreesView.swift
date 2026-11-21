@@ -133,21 +133,25 @@ struct WorktreesView: View {
                 .listStyle(.inset)
                 .cardList()
 
-                SelectionActionBar(
-                    selectedCount: effectiveSelection.count,
-                    totalCount: displayedWorktrees.filter(\.isBulkSelectable).count,
-                    selectedBytes: selectedSizeBytes,
-                    actionTitle: "Remove",
-                    isBusy: state.isCleaning,
-                    note: hiddenSelectionNote(hiddenSelectedCount),
-                    // The tray removes without force, so uncommitted worktrees stay here.
-                    onAddToTray: { CleanupTray.shared.add(effectiveSelection.filter { !$0.isDirty }.map(TrayItem.worktree)) },
-                    onSelectAll: {
-                        state.selectedWorktreeIDs.formUnion(displayedWorktrees.filter(\.isBulkSelectable).map(\.id))
-                    },
-                    onSelectNone: { state.selectedWorktreeIDs.removeAll() },
-                    onAction: confirmRemoveSelected
-                )
+                if effectiveSelection.isEmpty && !mergedSelection.isEmpty {
+                    nothingTickedBar
+                } else {
+                    SelectionActionBar(
+                        selectedCount: effectiveSelection.count,
+                        totalCount: displayedWorktrees.filter(\.isBulkSelectable).count,
+                        selectedBytes: selectedSizeBytes,
+                        actionTitle: "Remove",
+                        isBusy: state.isCleaning,
+                        note: hiddenSelectionNote(hiddenSelectedCount),
+                        // The tray removes without force, so uncommitted worktrees stay here.
+                        onAddToTray: { CleanupTray.shared.add(effectiveSelection.filter { !$0.isDirty }.map(TrayItem.worktree)) },
+                        onSelectAll: {
+                            state.selectedWorktreeIDs.formUnion(displayedWorktrees.filter(\.isBulkSelectable).map(\.id))
+                        },
+                        onSelectNone: { state.selectedWorktreeIDs.removeAll() },
+                        onAction: confirmRemoveSelected
+                    )
+                }
             }
         }
         .navigationTitle("Git Worktrees")
@@ -222,13 +226,17 @@ struct WorktreesView: View {
             .fixedSize()
     }
 
+    /// What "Select merged (N)" ticks.
+    private var mergedSelection: [WorktreeItem] { AppState.mergedWorktreeSelection(state.worktrees) }
+
     @ViewBuilder private var toolbarActions: some View {
-        Button("Select merged") {
-            state.selectedWorktreeIDs = Set(state.worktrees.filter(\.canAutoSelect).map(\.id))
+        // WorktreesShortcuts board: nothing starts ticked, so this is the primary toolbar button.
+        Button(Self.selectMergedTitle(count: mergedSelection.count)) {
+            state.selectedWorktreeIDs = Set(mergedSelection.map(\.id))
         }
-        .buttonStyle(ToolbarButtonStyle())
+        .buttonStyle(SweepButtonStyle(kind: .primary, height: 28))
         .help("Tick merged worktrees with nothing uncommitted")
-        .disabled(state.worktrees.isEmpty)
+        .disabled(mergedSelection.isEmpty)
 
         Button("Clean up missing folders") {
             Task { await state.pruneAllWorktrees() }
@@ -252,6 +260,42 @@ struct WorktreesView: View {
         }
         .buttonStyle(ToolbarButtonStyle())
         .disabled(state.isScanningWorktrees)
+    }
+
+    nonisolated static func selectMergedTitle(count: Int) -> String {
+        count > 0 ? "Select merged (\(count))" : "Select merged"
+    }
+
+    /// The bottom bar while nothing is ticked (WorktreesShortcuts board).
+    nonisolated static func nothingTickedText(count: Int, bytes: Int64) -> String {
+        let trees = count == 1 ? "the 1 merged, clean worktree" : "the \(count) merged, clean worktrees"
+        let them = count == 1 ? "it" : "them"
+        return "ticks \(trees) (\(FileSizeHelper.formatBytes(bytes))). Removing \(them) is permanent."
+    }
+
+    private var nothingTickedBar: some View {
+        let merged = mergedSelection
+        let bytes = merged.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        return HStack(spacing: 12) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.inkSecondary)
+            (Text("Nothing is ticked. ").foregroundStyle(Theme.inkSecondary)
+                + Text("Select merged").fontWeight(.semibold).foregroundStyle(Theme.ink)
+                + Text(" " + Self.nothingTickedText(count: merged.count, bytes: bytes)).foregroundStyle(Theme.inkSecondary))
+                .font(Theme.body)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Remove…") {}
+                .buttonStyle(SweepButtonStyle(kind: .primary))
+                .disabled(true)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        .padding(.horizontal, Theme.Space.page)
+        .padding(.vertical, 12)
     }
 
     // MARK: - Row

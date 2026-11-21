@@ -103,6 +103,14 @@ actor ScanIndexCache {
         }
     }
 
+    /// True when the next `homeIndex` has to read the whole home folder from scratch (no index in memory
+    /// or on disk), which takes about a minute. A first scan then runs its quick checks without waiting
+    /// for it (FirstScan board). A saved index is patched from FSEvents in about a second, so later scans
+    /// wait for it as before.
+    func needsFirstWalk(store: IndexStore = IndexStore()) -> Bool {
+        current == nil && !FileManager.default.fileExists(atPath: store.fileURL(forRoot: Self.homePath).path)
+    }
+
     /// Forget the in-memory copy (e.g. after a big cleanup) so the next call replays FSEvents immediately.
     func markStale() {
         refreshedAt = .distantPast

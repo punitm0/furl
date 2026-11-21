@@ -31,6 +31,13 @@ replace itself. A release without the `.sig` still works, but nobody gets it aut
 4. `./scripts/build_app.sh`, then `./scripts/make_dmg.sh`. Check that it printed:
    - `Wrote: …/build/Furl.dmg.sha256`
    - `Wrote: …/build/Furl.dmg.sig` (no "no update signing key" warning)
+   The DMG window's footer shows the app's version (`scripts/make_dmg_background.swift` draws it). After a
+   version bump, run `swift scripts/make_dmg_background.swift` and commit `Resources/dmg` so the fallback
+   images match too.
+   Then open Furl from the mounted DMG on a Mac where it isn't installed: it should offer **Move to
+   Applications**, reopen from Applications without a second Gatekeeper prompt, and eject the disk image.
+   (When running `build/Furl.app` from the repo, `defaults write app.getfurl.furl FurlSkipMoveCheck -bool YES`
+   turns the offer off.)
 5. Optional sanity check: `swift scripts/sign_update.swift sign build/Furl.dmg` signs again and checks the new
    signature against the key. CryptoKit's signatures include randomness, so it won't equal `build/Furl.dmg.sig`
    byte for byte; both are valid.
@@ -88,3 +95,13 @@ With `FurlUpdateTestAutoInstall` set, it installs whatever the check finds and l
    `~/Library/Application Support/Furl-UpdateTest` and `~/Library/Caches/Furl-UpdateTest` folders.
 
 Never point this at `/Applications/Furl.app` or a running real Furl.
+
+### Move to Applications test
+
+An update-test copy normally skips the move offer. Set `defaults write app.getfurl.furl.updatetest
+FurlMoveTestApplications <scratch>/Applications` and it treats that folder as /Applications instead. Put an
+older update-test copy there to see Replace It, put the new one in a disk image
+(`hdiutil create -srcfolder <folder with Furl.app> -volname FurlMoveTest -format UDZO <scratch>/FurlMoveTest.dmg`),
+mount it and open Furl from it. Expected: the offer, Replace It, the copy reopens from the scratch folder on
+Welcome with "Furl is in Applications now, and the disk image is ejected.", the old copy is in the Trash and
+the disk image is gone.

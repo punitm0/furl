@@ -458,6 +458,45 @@ enum AppUninstallerService {
         return key.capitalized
     }
 
+    /// Folders in ~/Library left by an app that was just dragged to the Trash (LeftoversWhatsNew
+    /// board), found with the same matcher as the Apps scan. Empty when another copy of the app is
+    /// still installed or running, or for Apple apps. A folder is a sure match only when its name is
+    /// the app's exact ID and that ID passes `isSureLeftover`; everything else is a possible match.
+    static func leftovers(forTrashedBundleID bundleID: String, appName: String) -> [AppDataItem] {
+        let lowerBundle = bundleID.lowercased()
+        guard !lowerBundle.isEmpty, !lowerBundle.hasPrefix("com.apple."),
+              lowerBundle != Bundle.main.bundleIdentifier?.lowercased() else { return [] }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var installedBundleIDs = Set<String>()
+        var installedAppNames = Set<String>()
+        for c in listAppBundles(home: home) {
+            if !c.bundleID.isEmpty { installedBundleIDs.insert(c.bundleID.lowercased()) }
+            installedAppNames.insert(c.name.lowercased())
+        }
+        for running in NSWorkspace.shared.runningApplications {
+            if let id = running.bundleIdentifier { installedBundleIDs.insert(id.lowercased()) }
+        }
+        guard !installedBundleIDs.contains(lowerBundle) else { return [] }
+
+        let sureID = isSureLeftover(key: lowerBundle, installedBundleIDs: installedBundleIDs,
+                                    installedAppNames: installedAppNames)
+        // Nested container caches are left out: the whole container is listed instead.
+        let matches = matchEntries(index: buildLibraryIndex(home: home), bundleID: bundleID, appName: appName)
+            .filter { $0.parentContainer == nil && !isProtectedLibraryEntry($0.name) }
+        let sizes = FootprintSizeCache.shared.sizes(for: matches.map(\.url.path))
+        return matches.map { entry in
+            AppDataItem(
+                id: entry.url.path,
+                path: entry.url.path,
+                name: entry.name,
+                location: entry.location,
+                sizeBytes: sizes[entry.url.path] ?? 0,
+                modifiedDate: FileSizeHelper.modifiedDate(at: entry.url),
+                isStrongMatch: entry.isStrong && sureID
+            )
+        }.sorted { $0.sizeBytes > $1.sizeBytes }
+    }
+
     /// Asks the app to quit and waits (up to `timeout`) for it to exit. Returns true if it is no longer running.
     @MainActor
     static func quitAppIfRunning(bundleIdentifier: String, timeout: Duration = .seconds(6)) async -> Bool {

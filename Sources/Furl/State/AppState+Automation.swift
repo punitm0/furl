@@ -96,9 +96,13 @@ extension AppState {
     /// (`CleanupRecheck`): it must still exist, be the same kind (file, folder, link) and carry the
     /// modification date the scan saw, and browser caches are left alone while their browser runs. Anything that fails is skipped,
     /// and the banner and History count only what actually went to the Trash.
+    ///
+    /// `fromFinishedParts` (the Overview while a junk scan is still running, FirstScan board): the items
+    /// the user saw come from checks that already finished in this scan, so they're fresh. They're moved
+    /// right away instead of after the whole scan, with the same on-disk re-check.
     @discardableResult
     func cleanSafeItems(store: AutoSweepStore, trigger: AutoSweepRun.Trigger,
-                        confirmedPaths: [String]) async -> AutoSweepRun? {
+                        confirmedPaths: [String], fromFinishedParts: Bool = false) async -> AutoSweepRun? {
         guard canStartSafeClean(confirmedPaths: confirmedPaths) else { return nil }
         isCleaning = true
         safeCleanNote = nil
@@ -111,9 +115,13 @@ extension AppState {
             setSafeCleanPhase(nil)
         }
 
-        await refreshSafeCleanupScans(maxAge: Self.safeCleanupMaxResultAge)
-        // Cancelled mid-rescan: the list may be half filled, so move nothing.
-        guard !Task.isCancelled, !isScanningJunk else { return nil }
+        if fromFinishedParts && isScanningJunk {
+            guard !Task.isCancelled else { return nil }
+        } else {
+            await refreshSafeCleanupScans(maxAge: Self.safeCleanupMaxResultAge)
+            // Cancelled mid-rescan: the list may be half filled, so move nothing.
+            guard !Task.isCancelled, !isScanningJunk else { return nil }
+        }
 
         let confirmedSet = Set(confirmedPaths)
         let items = Self.safeCleanTargets(plan: safeCleanupPlan, confirmed: confirmedSet,
@@ -531,7 +539,8 @@ extension AppState {
     nonisolated static func ledgerEntries(_ result: CleanupResult) -> [TrashLedgerEntry] {
         let now = Date()
         return result.trashedItems.map {
-            TrashLedgerEntry(originalPath: $0.originalPath, trashPath: $0.trashPath, date: now, fileID: $0.fileID, bytes: $0.sizeBytes)
+            TrashLedgerEntry(originalPath: $0.originalPath, trashPath: $0.trashPath, date: now, fileID: $0.fileID,
+                             bytes: $0.sizeBytes, stamp: $0.stamp)
         }
     }
 
@@ -658,5 +667,7 @@ struct CleanupStampBook {
     var smartReview: [String: CleanupStamp] = [:]
     /// App bundles, their data folders and orphaned leftovers.
     var apps: [String: CleanupStamp] = [:]
+    /// Language version folders listed under Developer tools.
+    var devTools: [String: CleanupStamp] = [:]
     var spaceMap: [String: CleanupStamp] = [:]
 }

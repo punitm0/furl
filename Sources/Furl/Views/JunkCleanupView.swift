@@ -121,6 +121,8 @@ struct JunkCleanupView: View {
                 }
             }
 
+            LimitedResultsLine(screen: .junk, hasResults: state.hasScannedJunk)
+
             LiveScanStripSlot(status: state.liveScans[.junk], onStop: { state.stopScan(.junk) },
                               onRescan: { Task { await state.scanJunk() } })
 

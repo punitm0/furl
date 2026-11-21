@@ -96,6 +96,38 @@ enum ShortcutsBridge {
         return run.trashed.isEmpty ? .failed : .cleaned(run)
     }
 
+    // MARK: - Stop leftover servers / Tidy project (WorktreesShortcuts board)
+
+    /// Leftovers the Shortcuts action may stop, after a fresh look at the process list. Stops nothing.
+    static func stoppableLeftovers() async -> [LeftoverProcess] {
+        LeftoverServers.eligible(await ProcessesStore.shared.freshLeftovers())
+    }
+
+    static func stopLeftovers(ids: Set<String>) async -> (stopped: Int, stuck: Int, bytes: UInt64) {
+        await ProcessesStore.shared.stopConfirmedLeftovers(ids: ids)
+    }
+
+    struct TidyPlan: Sendable {
+        var project: String
+        var folders: [ProjectTidy.Folder]
+        /// Read before the confirm, so anything that changes while it's up is left alone.
+        var stamps: [String: CleanupStamp]
+        var bytes: Int64 { folders.reduce(0) { $0 + $1.bytes } }
+    }
+
+    /// Finds the folders off the main thread. Changes nothing.
+    static func tidyPlan(root: String) async -> TidyPlan {
+        await Task.detached(priority: .userInitiated) {
+            let folders = ProjectTidy.find(in: root)
+            return TidyPlan(project: URL(fileURLWithPath: root).lastPathComponent, folders: folders,
+                            stamps: CleanupStamp.read(folders.map(\.path)))
+        }.value
+    }
+
+    static func tidy(_ plan: TidyPlan) async -> AppState.TidyOutcome {
+        await state.tidyProject(plan.folders, stamps: plan.stamps, project: plan.project, store: AppServices.autoSweep)
+    }
+
     /// How full the startup disk is right now, for the result notification.
     static var percentFull: Int {
         Int((state.diskUsage.usedFraction * 100).rounded())

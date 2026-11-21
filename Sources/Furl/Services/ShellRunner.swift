@@ -38,12 +38,13 @@ enum ShellRunner {
         _ executable: String,
         arguments: [String],
         workingDirectory: String? = nil,
-        timeout: TimeInterval = 60
+        timeout: TimeInterval = 60,
+        environment extra: [String: String] = [:]
     ) -> ShellOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.environment = augmentedEnvironment
+        process.environment = augmentedEnvironment.merging(extra) { _, new in new }
         process.standardInput = FileHandle.nullDevice
         if let workingDirectory {
             process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)

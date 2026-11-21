@@ -45,7 +45,7 @@ export function siteGraph(): Thing[] {
       releaseNotes: `${SITE}/changelog/#${latest.version}`,
       downloadUrl: site.downloadUrl,
       installUrl: `${SITE}/install/`,
-      license: "https://www.gnu.org/licenses/gpl-3.0.html",
+      license: "https://opensource.org/licenses/MIT",
       isAccessibleForFree: true,
       codeRepository: site.githubUrl,
       screenshot: `${SITE}/og-site.png`,

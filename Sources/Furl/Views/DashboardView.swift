@@ -3,8 +3,10 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var state: AppState
     @ObservedObject private var processes = ProcessesStore.shared
-    @State private var confirmEmptyTrash = false
+    /// "Empty Furl's Items…": the checked plan the confirm shows (TrashEmpty board).
+    @State private var emptyPlan: FurlTrashPlan?
     @State private var confirmEmptyFurlItems = false
+    @ObservedObject private var furlTrash = FurlTrashStore.shared
     /// When the current scan started; drives the "about 40 seconds left" estimate.
     @State private var scanStartDate = Date()
     /// When the last scan area finished (or the scan started); drives the smooth progress.
@@ -15,6 +17,9 @@ struct DashboardView: View {
     @ObservedObject private var snapshots = SnapshotsModel.shared
     @ObservedObject private var fullDiskAccess = FullDiskAccess.shared
     @ObservedObject private var autoSweep = AppServices.autoSweep
+    @ObservedObject private var firstScan = FirstScanRecord.shared
+    /// The guided first clean (FirstClean board), while its sheet is up.
+    @State private var firstClean: FirstCleanPicks?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,27 +27,25 @@ struct DashboardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     // First card in the page, so it scrolls away with the cards below it.
+                    InstallDoneBanner()
                     if fullDiskAccess.showsUpdateBanner, let version = fullDiskAccess.currentVersion {
                         updatedBanner(version: version)
+                    } else {
+                        // WelcomeAccess: same component, other words; the update banner wins.
+                        LimitedResultsLine(screen: .overview, hasResults: state.hasScannedAnything, padded: false)
                     }
                     if let summary = state.lastSafeClean {
                         freedBanner(summary)
                     }
                     heroPanel
-                    if let summary = state.lastSafeClean {
-                        trashLine(summary)
+                    if !furlTrash.items.isEmpty {
+                        trashLine
                     }
                     StorageBreakdownCard(state: state)
                     // AutoSweepTrust: offered after two manual cleans of the same kind.
                     AutoSweepSuggestionCard(store: autoSweep)
-                    if !state.hasScannedAnything && !state.isScanningAny {
-                        firstRunCard
-                    }
                     categoryGrid
                     smartPicksSection
-                    if state.lastSafeClean == nil {
-                        trashCard
-                    }
                     if state.hasDiscoveredProjects && state.projectRoots.isEmpty {
                         noProjectsHint
                     }
@@ -57,37 +60,88 @@ struct DashboardView: View {
         .navigationTitle("Overview")
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             fullDiskAccess.refresh()
+            refreshFurlTrash()
         }
-        .confirmationDialog(
-            "Empty the Trash?",
-            isPresented: $confirmEmptyTrash,
-            titleVisibility: .visible
-        ) {
-            Button("Empty Trash (\(FileSizeHelper.formatBytes(state.trashSizeBytes)))", role: .destructive) {
-                Task { await state.emptyTrash() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Everything in the Trash will be permanently deleted. This can't be undone.")
+        // The Trash line: Furl's items only, rechecked whenever the Overview appears or the record changes.
+        .task { await furlTrash.refresh(ledger: autoSweep.ledger) }
+        .onReceive(autoSweep.$ledger.dropFirst()) { ledger in
+            Task { await furlTrash.refresh(ledger: ledger) }
         }
+        // Undo (here, in History or with ⌥⌘Z) changes the history; the Trash line must follow it.
+        .onReceive(autoSweep.$history.dropFirst()) { _ in refreshFurlTrash() }
         .confirmationDialog(
-            "Empty Furl’s items from the Trash?",
+            emptyPlan?.isPartial == true ? "Some items are no longer in the Trash" : "Empty Furl’s items from the Trash?",
             isPresented: $confirmEmptyFurlItems,
-            titleVisibility: .visible
-        ) {
-            Button("Empty Furl’s Items (\(FileSizeHelper.formatBytes(state.furlTrashBytes(store: autoSweep))))", role: .destructive) {
-                Task { await state.emptyFurlTrashItems(store: autoSweep) }
+            titleVisibility: .visible,
+            presenting: emptyPlan
+        ) { plan in
+            // The size always matches what will be deleted.
+            Button("Empty \(FileSizeHelper.formatBytes(plan.matchedBytes))", role: .destructive) {
+                Task { await state.emptyFurlTrash(plan, store: autoSweep) }
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("What Furl moved to the Trash will be permanently deleted. Your own Trash items are left alone. This can't be undone.")
+        } message: { plan in
+            Text(Self.emptyConfirmMessage(plan))
         }
+        .dialogSeverity(.critical)
+        // FirstClean board: offered once, when the first scan has finished and the Overview is on screen.
+        .onAppear(perform: offerFirstCleanIfDue)
+        .onChange(of: firstScan.firstCleanDue) { offerFirstCleanIfDue() }
+        .onChange(of: state.isScanningAny) { offerFirstCleanIfDue() }
+        .sheet(item: $firstClean) { picks in
+            FirstCleanSheet(state: state, store: autoSweep, picks: picks.picks)
+        }
+    }
+
+    /// TrashEmpty board: the confirm says it's permanent and names the size; the partial one says how
+    /// many no longer match before anything is deleted.
+    nonisolated static func emptyConfirmMessage(_ plan: FurlTrashPlan) -> String {
+        let size = FileSizeHelper.formatBytes(plan.matchedBytes)
+        if plan.isPartial {
+            return "\(plan.notMatchedCount) of \(plan.total) were put back, renamed or already emptied. "
+                + "Furl will delete the \(plan.matched.count) it can still match: \(size), for good.\n\n"
+                + "Anything that changed since Furl moved it is skipped."
+        }
+        let items = "\(plan.total) item\(plan.total == 1 ? "" : "s")"
+        return "\(items), \(size), will be deleted for good. This can’t be undone.\n\n"
+            + "Your own items in the Trash are left alone."
+    }
+
+    private func refreshFurlTrash() {
+        Task { await furlTrash.refresh(ledger: autoSweep.ledger) }
+    }
+
+    /// Checks every item fully (sizes too) before the confirm opens, so its numbers are what will go.
+    private func startEmptyFurlItems() {
+        Task {
+            let plan = await furlTrash.prepareEmpty(ledger: autoSweep.ledger)
+            if plan.matched.isEmpty {
+                state.statusBanner = "Nothing to empty. Furl’s items changed or are no longer in the Trash."
+                await furlTrash.refresh(ledger: autoSweep.ledger)
+                return
+            }
+            emptyPlan = plan
+            confirmEmptyFurlItems = true
+        }
+    }
+
+    /// Shows the guided first clean when its rules allow, and either way never again.
+    private func offerFirstCleanIfDue() {
+        guard firstScan.firstCleanDue, !state.isScanningAny, firstClean == nil,
+              state.selectedSection == .dashboard else { return }
+        let picks = FirstCleanOffer.picks(plan: safePlan, junk: state.junkItems)
+        let offer = FirstCleanOffer.shouldOffer(picks, hasCleanedBefore: state.hasCleanedBefore(store: autoSweep))
+        firstScan.markFirstCleanOffered()
+        if offer { firstClean = FirstCleanPicks(picks: picks) }
     }
 
     // MARK: - Header
 
     private var headerSubtitle: String {
-        if state.isScanningAny { return "Scanning… \(Int(scanFraction * 100))%" }
+        if state.isScanningAny {
+            if isFirstScanRunning { return "First scan · started \(startedAgo)" }
+            return "Scanning… \(Int(scanFraction * 100))%"
+        }
         if let lastScan = state.lastScanDate { return "Scanned \(lastScan.relativeDescription)" }
         return "Find merged Git worktrees, stale caches, app leftovers and large files."
     }
@@ -128,7 +182,7 @@ struct DashboardView: View {
                 if !state.isScanningAny {
                     Image(systemName: "arrow.clockwise")
                 }
-                Text(state.isScanningAny ? "Stop" : state.hasScannedAnything ? "Rescan" : "Scan All")
+                Text(state.isScanningAny ? "Stop" : state.hasScannedAnything ? "Rescan" : "Start Scan")
             }
         }
         .buttonStyle(SweepButtonStyle(kind: .secondary))
@@ -140,44 +194,31 @@ struct DashboardView: View {
     /// One-time banner on the first launch of a new version when Full Disk Access is off
     /// (UpdatePermissions board). Mint, not warning orange: nothing is broken, Furl sees less.
     private func updatedBanner(version: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.sweep)
-            Text("**Furl was updated to \(version).** macOS turned Full Disk Access off for the new version. Turn it on again so sizes stay complete.")
-                .foregroundStyle(Theme.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Show Me How") {
-                SettingsTab.select(.permissions)
-                AppWindows.activateForWindow()
-                openSettings()
+        FullDiskAccessNotice(
+            systemImage: "lock.shield",
+            dismissLabel: "Dismiss",
+            onDismiss: { fullDiskAccess.dismissUpdateBanner() },
+            message: {
+                Text("**Furl was updated to \(version).** macOS turned Full Disk Access off for the new version. Turn it on again so sizes stay complete.")
+            },
+            actions: {
+                Button("Show Me How") {
+                    SettingsTab.select(.permissions)
+                    AppWindows.activateForWindow()
+                    openSettings()
+                }
+                .buttonStyle(SweepLinkStyle())
+                .font(.system(size: 12, weight: .medium))
+                .fixedSize()
+                Button {
+                    DeletionService.openFullDiskAccessSettings()
+                } label: {
+                    ToolbarChipLabel(title: "Open Settings", weight: .medium)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
             }
-            .buttonStyle(SweepLinkStyle())
-            .font(.system(size: 12, weight: .medium))
-            .fixedSize()
-            Button {
-                DeletionService.openFullDiskAccessSettings()
-            } label: {
-                ToolbarChipLabel(title: "Open Settings", weight: .medium)
-            }
-            .buttonStyle(.plain)
-            .fixedSize()
-            Button {
-                fullDiskAccess.dismissUpdateBanner()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Theme.inkSecondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss")
-        }
-        .font(.system(size: 12))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity)
-        // An inset card with the same corners as the cards below it, not a square strip.
-        .background(Theme.mintTint, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        )
     }
 
     /// "+X GB this week" from saved snapshots; opens Disk › What grew.
@@ -220,7 +261,8 @@ struct DashboardView: View {
     private var heroState: HeroState {
         if let summary = state.lastSafeClean { return .cleaned(summary) }
         if !state.hasScannedAnything && !state.isScanningAny { return .notScanned }
-        if state.isScanningJunk || !state.hasScannedJunk { return .waitingForCaches }
+        // The safe number shows as soon as the first junk check finishes (FirstScan board).
+        if state.isScanningJunk ? state.junkPartsDone.isEmpty : !state.hasScannedJunk { return .waitingForCaches }
         return .ready
     }
 
@@ -278,11 +320,12 @@ struct DashboardView: View {
     private var heroPanel: some View {
         // Board: padding 28, gap 28; ring 168, text column 300, steps take the rest behind a divider.
         // Narrower pages (cleanup tray open, small window) move the steps under the ring and text.
-        let showsSteps = heroState != .notScanned
+        // FirstScan board: text column 320; before any scan the steps column lists what the scan looks at.
+        let showsSteps = true
         return ViewThatFits(in: .horizontal) {
             HStack(alignment: .center, spacing: 28) {
                 heroRing
-                heroText.frame(width: 300, alignment: .leading)
+                heroText.frame(width: 320, alignment: .leading)
                 if showsSteps {
                     heroSteps
                         // A fixed ideal width: the detail lines are long and would otherwise make
@@ -333,12 +376,8 @@ struct DashboardView: View {
         let freeable: Int64
         let percent: Int
         switch heroState {
-        case .cleaned(let summary):
-            // The ring shows the fullness the clean leads to once the Trash is emptied.
-            used = max(0, summary.diskBefore.usedBytes - summary.freedBytes)
-            freeable = 0
-            percent = summary.percentAfter
-        case .notScanned, .waitingForCaches:
+        case .cleaned, .notScanned, .waitingForCaches:
+            // After a clean the space isn't free until the Trash is emptied (TrashEmpty board).
             used = disk.usedBytes
             freeable = 0
             percent = percentFull(disk.usedBytes)
@@ -369,20 +408,26 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 6) {
             switch heroState {
             case .notScanned:
-                heroEyebrow("See what you can get back")
-                heroStatusText("Nothing scanned yet")
-                heroLine("A full scan only reads. Nothing is moved until you choose.", strong: true)
+                // FirstScan board, "before the first scan": the promise in one line.
+                heroEyebrow(firstScan.isFirstScan ? "Ready for your first scan" : "See what you can get back")
+                Text("See what’s safe to remove")
+                    .font(Theme.display(30))
+                    .foregroundStyle(Theme.onPine)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                heroLine(firstScan.promise, strong: true)
+                heroLine("Nothing is removed without asking.", strong: false)
                 heroButtonRow {
                     Button {
                         Task { await state.scanAll() }
                     } label: {
-                        Text("Scan All")
+                        Text("Start Scan")
                     }
                     .buttonStyle(SweepButtonStyle(kind: .heroPrimary, height: 48))
                 }
             case .waitingForCaches:
                 heroEyebrow("Safe to remove right now")
-                heroStatusText("Looking…")
+                heroStatusText(isFirstScanRunning ? "Checking caches…" : "Looking…")
                 VStack(alignment: .leading, spacing: 6) {
                     HeroProgressBar(fraction: scanFraction)
                     Text(scanActivity)
@@ -407,7 +452,8 @@ struct DashboardView: View {
             case .cleaned(let summary):
                 heroEyebrow("You got back")
                 bigNumber(summary.freedBytes)
-                heroLine("Now \(summary.percentAfter)% full (was \(summary.percentBefore)%) · \(bytes(summary.freeAfter)) free", strong: true)
+                // Not free until the Trash is emptied, so the ring and this line show today's fullness.
+                heroLine("Once the Trash is emptied · now \(percentFull(state.diskUsage.usedBytes))% full", strong: true)
                 if let win = summary.biggestWin {
                     heroLine("Biggest win: \(win.name), \(bytes(win.bytes))", strong: false)
                 }
@@ -436,10 +482,14 @@ struct DashboardView: View {
     private var readyText: some View {
         let plan = safePlan
         let scanning = state.isScanningAny
-        heroEyebrow("Safe to remove right now")
+        heroEyebrow(isFirstScanRunning ? "Safe to remove so far" : "Safe to remove right now")
         if plan.bytes > 0 {
             bigNumber(plan.bytes)
-            if scanning {
+            if isFirstScanRunning {
+                let disk = state.diskUsage
+                heroLine("Counted from the checks that are done. It only goes up from here.", strong: true)
+                heroLine("\(percentFull(disk.usedBytes))% full → \(percentFull(max(0, disk.usedBytes - plan.bytes)))% full · \(bytes(disk.availableBytes + plan.bytes)) free after", strong: false)
+            } else if scanning {
                 heroLine("So far. Still checking, more may come.", strong: true)
                 heroLine("You can start now. Nothing found later is added without asking.", strong: false)
             } else {
@@ -451,7 +501,9 @@ struct DashboardView: View {
                 Button {
                     // Exactly the items this button showed; anything found later waits for the next look.
                     let confirmed = plan.paths
-                    Task { await state.cleanSafeNow(store: autoSweep, confirmedPaths: confirmed) }
+                    // Mid-scan, these come from finished checks: they move now, not after the scan.
+                    let midScan = state.isScanningJunk
+                    Task { await state.cleanSafeNow(store: autoSweep, confirmedPaths: confirmed, fromFinishedParts: midScan) }
                 } label: {
                     HStack(spacing: 8) {
                         if state.safeCleanPhase != nil {
@@ -542,7 +594,16 @@ struct DashboardView: View {
 
     // MARK: Steps
 
+    @ViewBuilder
     private var heroSteps: some View {
+        if heroState == .notScanned {
+            scanPlanSteps
+        } else {
+            spaceSteps
+        }
+    }
+
+    private var spaceSteps: some View {
         let plan = safePlan
         let steps = state.spaceSteps
         let cleaned: SafeCleanSummary? = {
@@ -556,6 +617,7 @@ struct DashboardView: View {
         let afterYours = afterQuick + steps.largeFileBytes
 
         let quickScanning = state.isScanningWorktrees || state.isScanningDuplicates || state.isScanningApps
+            || state.isScanningDevTools
         return VStack(alignment: .leading, spacing: 0) {
             Text(stepsHeader(cleaned: cleaned != nil).uppercased())
                 .font(.system(size: 11, weight: .semibold))
@@ -577,7 +639,7 @@ struct DashboardView: View {
                         isFirst: true, checking: true) { EmptyView() }
             } else {
                 StepRow(title: "Safe now",
-                        detail: plan.bytes > 0 ? "Caches and junk \(bytes(plan.bytes))" : "Nothing safe right now",
+                        detail: junkPartsDetail ?? (plan.bytes > 0 ? "Caches and junk \(bytes(plan.bytes))" : "Nothing safe right now"),
                         amount: amount(plan.bytes),
                         after: "→ \(bytes(afterSafe)) free",
                         isFirst: true) {
@@ -593,7 +655,16 @@ struct DashboardView: View {
                     amount: quickScanning && steps.quickLookBytes == 0 ? "—" : amount(steps.quickLookBytes),
                     after: quickScanning ? (steps.quickLookBytes > 0 ? "so far" : "") : "→ \(bytes(afterQuick)) free",
                     checking: quickScanning) {
+                if isFirstScanRunning && quickScanning {
+                    stepStatus("Checking")
+                } else {
                 Button("Review") {
+                    // Only old language versions: they're reviewed in Apps & Leftovers › Developer tools.
+                    if steps.trayBytes == 0 && steps.oldVersionBytes > 0 {
+                        state.openDevToolsFilter = true
+                        state.selectedSection = .apps
+                        return
+                    }
                     // The tray, with what this step counts: nothing ticked that the sections wouldn't tick.
                     CleanupTray.shared.add(TrayItem.reclaimable(
                         junk: [],
@@ -604,24 +675,34 @@ struct DashboardView: View {
                 }
                 .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 32))
                 .disabled(steps.quickLookBytes == 0 || state.isCleaning)
+                }
             }
 
             // 3. Your call
             StepRow(title: "Your call",
-                    detail: state.isScanningLargeFiles ? "Checking large files…" : "Large files you haven’t changed in a year",
+                    detail: state.isScanningLargeFiles
+                        ? (isFirstScanRunning ? "Waiting for large files" : "Checking large files…")
+                        : "Large files you haven’t changed in a year",
                     amount: state.isScanningLargeFiles && steps.largeFileBytes == 0 ? "—" : amount(steps.largeFileBytes),
                     after: state.isScanningLargeFiles ? (steps.largeFileBytes > 0 ? "so far" : "") : "→ \(bytes(afterYours)) free",
                     checking: state.isScanningLargeFiles) {
-                Button("Pick files") {
-                    state.selectedSection = .largeFiles
+                if isFirstScanRunning && state.isScanningLargeFiles {
+                    stepStatus("Waiting")
+                } else {
+                    Button("Pick files") {
+                        state.selectedSection = .largeFiles
+                    }
+                    .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 32))
                 }
-                .buttonStyle(SweepButtonStyle(kind: .heroSecondary, height: 32))
             }
         }
     }
 
     private func stepsHeader(cleaned: Bool) -> String {
         if cleaned { return "Want more? These are still here" }
+        if isFirstScanRunning {
+            return ["First scan", scanTimeLeft, "only reading"].compactMap { $0 }.joined(separator: " · ")
+        }
         if state.isScanningAny {
             return ["Still checking", scanTimeLeft].compactMap { $0 }.joined(separator: " · ")
         }
@@ -631,7 +712,8 @@ struct DashboardView: View {
     private var quickChecking: String {
         if state.isScanningWorktrees { return "Checking worktrees…" }
         if state.isScanningDuplicates { return "Checking duplicates…" }
-        return "Checking app leftovers…"
+        if state.isScanningApps { return "Checking app leftovers…" }
+        return "Checking old language versions…"
     }
 
     private func quickDetail(_ steps: SpaceSteps) -> String {
@@ -639,7 +721,64 @@ struct DashboardView: View {
         if steps.worktreeBytes > 0 { parts.append("Merged worktrees \(bytes(steps.worktreeBytes))") }
         if steps.duplicateBytes > 0 { parts.append("Duplicate copies \(bytes(steps.duplicateBytes))") }
         if steps.leftoverBytes > 0 { parts.append("App leftovers \(bytes(steps.leftoverBytes))") }
+        if steps.oldVersionBytes > 0 { parts.append("Old versions \(bytes(steps.oldVersionBytes))") }
         return parts.isEmpty ? "Nothing to look at" : parts.joined(separator: " · ")
+    }
+
+    // MARK: First scan (FirstScan board)
+
+    /// The first full scan is running: the hero, header and cards show its first-scan state.
+    private var isFirstScanRunning: Bool { firstScan.isFirstScan && state.isScanningAny }
+
+    /// "20 seconds ago" for "First scan · started 20 seconds ago".
+    private var startedAgo: String {
+        let seconds = max(0, scanNow.timeIntervalSince(scanStartDate))
+        if seconds < 10 { return "just now" }
+        if seconds < 60 { return "\(Int(seconds / 10) * 10) seconds ago" }
+        let minutes = Int(seconds / 60)
+        return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
+    }
+
+    /// "Build and package caches done · checking app caches and logs…" while the junk scan still runs.
+    private var junkPartsDetail: String? {
+        guard state.isScanningJunk, let last = state.junkPartsDone.last else { return nil }
+        let done = Self.partName(last) + " done"
+        let phase = state.liveScans[.junk]?.detail.components(separatedBy: " · ").first ?? ""
+        let next = phase.hasPrefix("Checking ") ? String(phase.dropFirst("Checking ".count)) : phase
+        guard !next.isEmpty, next != Self.partName(last).lowercased() else { return done }
+        return "\(done) · \(next.prefix(1).lowercased() + next.dropFirst())…"
+    }
+
+    /// "Checking build and package caches" → "Build and package caches".
+    private static func partName(_ title: String) -> String {
+        let name = title.hasPrefix("Checking ") ? String(title.dropFirst("Checking ".count)) : title
+        return name.prefix(1).uppercased() + name.dropFirst()
+    }
+
+    /// "Checking" / "Waiting" in a step's action slot while the first scan runs.
+    private func stepStatus(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Theme.pineMuted)
+    }
+
+    /// Before any scan: what the scan looks at, fastest first.
+    private var scanPlanSteps: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("What the scan looks at".uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(Theme.pineMuted)
+                .lineLimit(1)
+            StepRow(title: "Caches and junk", detail: "Build files, package caches, app caches, old logs",
+                    amount: "—", after: "first, about 20 s", isFirst: true) { EmptyView() }
+            StepRow(title: "Data from removed apps", detail: "Folders left in ~/Library by apps you deleted",
+                    amount: "—", after: "about 20 s") { EmptyView() }
+            StepRow(title: "Git worktrees", detail: "In the project folders Furl found",
+                    amount: "—", after: "about 1 min") { EmptyView() }
+            StepRow(title: "Large files and duplicates", detail: "Your home folder, read once",
+                    amount: "—", after: "the rest") { EmptyView() }
+        }
     }
 
     // MARK: After cleaning
@@ -671,17 +810,20 @@ struct DashboardView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "17.9 GB is in the Trash, not gone yet" with the permanent "Empty Furl's items…" (asks first).
-    private func trashLine(_ summary: SafeCleanSummary) -> some View {
+    /// TrashEmpty board: "17.9 GB is in the Trash. It's freed when you empty it." Furl's items only;
+    /// "Empty Furl's Items…" is permanent and asks first.
+    private var trashLine: some View {
         HStack(spacing: 12) {
             Image(systemName: "trash")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Theme.inkSecondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("\(bytes(summary.freedBytes)) is in the Trash, not gone yet")
+                .frame(width: 34, height: 34)
+                .background(Theme.accentGray.bg, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(bytes(furlTrash.bytes)) is in the Trash. It’s freed when you empty it.")
                     .font(Theme.bodyStrong)
                     .foregroundStyle(Theme.ink)
-                Text("macOS frees the space when the Trash is emptied. Your own Trash items are left alone.")
+                Text("That’s what Furl put there. Your own items in the Trash are left alone.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -694,41 +836,17 @@ struct DashboardView: View {
                 .padding(.vertical, 2)
                 .background(Theme.dangerTint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .fixedSize()
-            Button("Empty Furl’s items…") {
-                confirmEmptyFurlItems = true
+            Button("Empty Furl’s Items…") {
+                startEmptyFurlItems()
             }
             .buttonStyle(SweepButtonStyle(kind: .secondary, height: 30))
             .fixedSize()
-            .disabled(state.isCleaning || autoSweep.ledger.isEmpty)
+            .disabled(state.isCleaning || furlTrash.isPreparing)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
-    }
-
-    // MARK: - First run
-
-    private var firstRunCard: some View {
-        HStack(spacing: 16) {
-            SweepMark(style: .tile)
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Ready when you are")
-                    .font(Theme.bodyStrong)
-                    .foregroundStyle(Theme.ink)
-                Text("A full scan looks through your project folders, ~/Library caches, installed apps and your home folder. Nothing is removed without your confirmation, and by default items go to the Trash.")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button("Start Scan") {
-                Task { await state.scanAll() }
-            }
-            .buttonStyle(SweepButtonStyle(kind: .primary, height: 36))
-        }
-        .card()
     }
 
     // MARK: - Category cards
@@ -737,62 +855,68 @@ struct DashboardView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
             SummaryCard(
                 title: "Caches & Junk",
-                value: valueText(state.totalJunkReclaimableBytes, scanned: state.hasScannedJunk),
-                subtitle: state.hasScannedJunk ? junkSubtitle : "Not scanned yet",
+                value: firstScanCard(.junk)?.value ?? valueText(state.totalJunkReclaimableBytes, scanned: state.hasScannedJunk),
+                subtitle: firstScanCard(.junk)?.subtitle ?? (state.hasScannedJunk ? junkSubtitle : "Not scanned yet"),
                 systemImage: SidebarSection.junk.systemImage,
                 tint: Theme.accentTeal.fg,
                 tintBackground: Theme.accentTeal.bg,
-                isLoading: state.isScanningJunk
+                isLoading: state.isScanningJunk,
+                isDone: firstScanCard(.junk)?.done ?? false
             ) {
                 state.selectedSection = .junk
             }
 
             SummaryCard(
                 title: "Merged Worktrees",
-                value: valueText(state.totalWorktreeReclaimableBytes, scanned: state.hasScannedWorktrees),
-                subtitle: state.hasScannedWorktrees ? "\(state.worktrees.filter(\.canAutoSelect).count) worktrees merged or squash-merged" : "Not scanned yet",
+                value: firstScanCard(.worktrees)?.value ?? valueText(state.totalWorktreeReclaimableBytes, scanned: state.hasScannedWorktrees),
+                subtitle: firstScanCard(.worktrees)?.subtitle ?? (state.hasScannedWorktrees ? "\(state.worktrees.filter(\.canAutoSelect).count) worktrees merged or squash-merged" : "Not scanned yet"),
                 systemImage: SidebarSection.worktrees.systemImage,
                 tint: Theme.accentViolet.fg,
                 tintBackground: Theme.accentViolet.bg,
-                isLoading: state.isScanningWorktrees
+                isLoading: state.isScanningWorktrees,
+                isDone: firstScanCard(.worktrees)?.done ?? false
             ) {
                 state.selectedSection = .worktrees
             }
 
             SummaryCard(
                 title: "Duplicates",
-                value: valueText(state.totalDuplicateReclaimableBytes, scanned: state.hasScannedDuplicates),
-                subtitle: state.hasScannedDuplicates ? "\(state.duplicateGroups.count) sets of identical files" : "Not scanned yet",
+                value: firstScanCard(.duplicates)?.value ?? valueText(state.totalDuplicateReclaimableBytes, scanned: state.hasScannedDuplicates),
+                subtitle: firstScanCard(.duplicates)?.subtitle ?? (state.hasScannedDuplicates ? "\(state.duplicateGroups.count) sets of identical files" : "Not scanned yet"),
                 systemImage: SidebarSection.duplicates.systemImage,
                 tint: Theme.accentPink.fg,
                 tintBackground: Theme.accentPink.bg,
-                isLoading: state.isScanningDuplicates
+                // "Starts after Large Files" is waiting, not checking: no spinner (FirstScan board).
+                isLoading: state.isScanningDuplicates && !(isFirstScanRunning && state.isScanningLargeFiles),
+                isDone: firstScanCard(.duplicates)?.done ?? false
             ) {
                 state.selectedSection = .duplicates
             }
 
             SummaryCard(
                 title: "Apps & Leftovers",
-                value: valueText(state.totalOrphanedAppDataBytes, scanned: state.hasScannedApps),
-                subtitle: state.hasScannedApps ? "\(state.orphanedGroups.count) uninstalled app leftovers" : "Not scanned yet",
+                value: firstScanCard(.apps)?.value ?? valueText(state.totalOrphanedAppDataBytes, scanned: state.hasScannedApps),
+                subtitle: firstScanCard(.apps)?.subtitle ?? (state.hasScannedApps ? "\(state.orphanedGroups.count) uninstalled app leftovers" : "Not scanned yet"),
                 systemImage: SidebarSection.apps.systemImage,
                 tint: Theme.accentBlue.fg,
                 tintBackground: Theme.accentBlue.bg,
-                isLoading: state.isScanningApps
+                isLoading: state.isScanningApps,
+                isDone: firstScanCard(.apps)?.done ?? false
             ) {
                 state.selectedSection = .apps
             }
 
             SummaryCard(
                 title: "Large Files",
-                value: valueText(state.totalLargeFilesBytes, scanned: state.hasScannedLargeFiles),
-                subtitle: state.hasScannedLargeFiles
+                value: firstScanCard(.largeFiles)?.value ?? valueText(state.totalLargeFilesBytes, scanned: state.hasScannedLargeFiles),
+                subtitle: firstScanCard(.largeFiles)?.subtitle ?? (state.hasScannedLargeFiles
                     ? "\(state.largeFiles.count) files over \(FileSizeHelper.formatBytes(state.largeFileThresholdMB * 1_000_000))"
-                    : "Not scanned yet",
+                    : "Not scanned yet"),
                 systemImage: SidebarSection.largeFiles.systemImage,
                 tint: Theme.accentTeal.fg,
                 tintBackground: Theme.accentTeal.bg,
-                isLoading: state.isScanningLargeFiles
+                isLoading: state.isScanningLargeFiles,
+                isDone: firstScanCard(.largeFiles)?.done ?? false
             ) {
                 state.selectedSection = .largeFiles
             }
@@ -826,6 +950,50 @@ struct DashboardView: View {
             return n > 1 ? "\(name) ×\(n)" : name
         }
         return top.joined(separator: ", ")
+    }
+
+    /// FirstScan board: while the first scan runs, each card fills in on its own: a spinner and what
+    /// it is doing while checking, "starts after …" while waiting, a check mark and the number when done.
+    /// Nil outside the first scan, where the cards read as before.
+    private func firstScanCard(_ section: SidebarSection) -> (value: String, subtitle: String, done: Bool)? {
+        guard isFirstScanRunning else { return nil }
+        let scanning: Bool, scanned: Bool, bytes: Int64, summary: String
+        switch section {
+        case .junk:
+            (scanning, scanned, bytes) = (state.isScanningJunk, state.hasScannedJunk, state.totalJunkReclaimableBytes)
+            summary = "\(state.junkItems.count) item\(state.junkItems.count == 1 ? "" : "s")"
+        case .worktrees:
+            (scanning, scanned, bytes) = (state.isScanningWorktrees, state.hasScannedWorktrees, state.totalWorktreeReclaimableBytes)
+            summary = "\(state.worktrees.filter(\.canAutoSelect).count) merged"
+        case .duplicates:
+            (scanning, scanned, bytes) = (state.isScanningDuplicates, state.hasScannedDuplicates, state.totalDuplicateReclaimableBytes)
+            summary = "\(state.duplicateGroups.count) sets of identical files"
+        case .apps:
+            (scanning, scanned, bytes) = (state.isScanningApps, state.hasScannedApps, state.totalOrphanedAppDataBytes)
+            summary = "\(state.orphanedGroups.count) removed app\(state.orphanedGroups.count == 1 ? "" : "s")"
+        case .largeFiles:
+            (scanning, scanned, bytes) = (state.isScanningLargeFiles, state.hasScannedLargeFiles, state.totalLargeFilesBytes)
+            summary = "\(state.largeFiles.count) file\(state.largeFiles.count == 1 ? "" : "s")"
+        default:
+            return nil
+        }
+        let value = bytes > 0 ? FileSizeHelper.formatBytes(bytes) : "—"
+        guard scanning else {
+            return scanned ? (value, "done · \(summary)", true) : nil
+        }
+        let subtitle: String
+        switch section {
+        case .junk:
+            subtitle = state.junkPartsDone.last.map { Self.partName($0).lowercased() + " done · more coming" } ?? "checking caches first"
+        case .duplicates where state.isScanningLargeFiles:
+            subtitle = "starts after Large Files"
+        case .largeFiles:
+            subtitle = "reading your home folder"
+        default:
+            let detail = state.liveScans[section]?.detail.components(separatedBy: " · ").first ?? ""
+            subtitle = detail.isEmpty ? "checking…" : detail.prefix(1).lowercased() + detail.dropFirst()
+        }
+        return (value, subtitle, false)
     }
 
     private func valueText(_ bytes: Int64, scanned: Bool) -> String {
@@ -930,40 +1098,6 @@ struct DashboardView: View {
             parts.append(first)
         }
         return parts.joined(separator: " · ")
-    }
-
-    // MARK: - Trash
-
-    private var trashCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "trash")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.inkSecondary)
-                .frame(width: 28, height: 28)
-                .background(Theme.accentGray.bg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Trash")
-                    .font(Theme.bodyStrong)
-                    .foregroundStyle(Theme.ink)
-                Text(state.trashSizeBytes > 0
-                     ? "\(FileSizeHelper.formatBytes(state.trashSizeBytes)) waiting. Cleaned items stay here until you empty it."
-                     : "Empty")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.inkSecondary)
-            }
-            Spacer()
-            if state.lifetimeFreedBytes > 0 {
-                Text("\(FileSizeHelper.formatBytes(state.lifetimeFreedBytes)) freed all-time")
-                    .font(Theme.caption.weight(.medium))
-                    .foregroundStyle(Theme.sweep)
-            }
-            Button("Empty Trash…") {
-                confirmEmptyTrash = true
-            }
-            .buttonStyle(SweepButtonStyle(kind: .secondary, height: 28))
-            .disabled(state.trashSizeBytes == 0 || state.isCleaning)
-        }
-        .card(padding: 14)
     }
 
     // MARK: - Scan folders
@@ -1235,4 +1369,10 @@ private struct HeroSpinner: View {
             .onAppear { spinning = true }
             .accessibilityHidden(true)
     }
+}
+
+/// The guided first clean's three picks, as a sheet item.
+struct FirstCleanPicks: Identifiable {
+    let id = UUID()
+    let picks: [FirstCleanOffer.Pick]
 }

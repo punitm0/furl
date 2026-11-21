@@ -18,6 +18,8 @@ final class NotificationService: NSObject, ObservableObject {
         static let shortcutNothing = "FURL_SHORTCUT_NOTHING"
         static let askFirst = "FURL_AUTOSWEEP_ASK"
         static let offerAutomatic = "FURL_AUTOSWEEP_OFFER_AUTOMATIC"
+        /// An app was dragged to the Trash and left data behind (LeftoversWhatsNew board).
+        static let trashedAppLeftovers = "FURL_TRASHED_APP_LEFTOVERS"
     }
 
     enum Action {
@@ -30,10 +32,15 @@ final class NotificationService: NSObject, ObservableObject {
         static let undoRun = "FURL_UNDO_RUN"
         static let switchToAutomatic = "FURL_AUTOSWEEP_SWITCH_AUTOMATIC"
         static let keepAsking = "FURL_AUTOSWEEP_KEEP_ASKING"
+        static let reviewLeftovers = "FURL_LEFTOVERS_REVIEW"
+        static let leftoversNotNow = "FURL_LEFTOVERS_NOT_NOW"
     }
 
     /// userInfo key holding the History run that Undo restores (Shortcuts result, Auto-Sweep done).
     nonisolated static let runIDKey = "furlRunID"
+    /// userInfo keys for the trashed-app leftovers offer.
+    nonisolated static let bundleIDKey = "furlBundleID"
+    nonisolated static let appNameKey = "furlAppName"
 
     @Published private(set) var authorization: UNAuthorizationStatus = .notDetermined
     @Published private(set) var lastError: String?
@@ -50,6 +57,8 @@ final class NotificationService: NSObject, ObservableObject {
     var onUndoRun: (@MainActor (UUID) -> Void)?
     /// The one-time Automatic offer.
     var onSwitchToAutomatic: (@MainActor () -> Void)?
+    /// "Review…" on the trashed-app leftovers offer: bundle ID and app name.
+    var onReviewLeftovers: (@MainActor (String, String) -> Void)?
 
     /// UNUserNotificationCenter throws an exception when the process isn't inside an .app bundle
     /// (e.g. `swift run`), so every call is guarded by this.
@@ -83,13 +92,16 @@ final class NotificationService: NSObject, ObservableObject {
         let undo = UNNotificationAction(identifier: Action.undoRun, title: "Undo", options: [])
         let switchAutomatic = UNNotificationAction(identifier: Action.switchToAutomatic, title: "Switch to Automatic", options: [])
         let keepAsking = UNNotificationAction(identifier: Action.keepAsking, title: "Keep asking", options: [])
+        let reviewLeftovers = UNNotificationAction(identifier: Action.reviewLeftovers, title: "Review\u{2026}", options: [.foreground])
+        let leftoversNotNow = UNNotificationAction(identifier: Action.leftoversNotNow, title: "Not Now", options: [])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: Category.lowDisk, actions: [clean, review], intentIdentifiers: []),
             UNNotificationCategory(identifier: Category.summary, actions: [undo], intentIdentifiers: []),
             UNNotificationCategory(identifier: Category.shortcutResult, actions: [undo], intentIdentifiers: []),
             UNNotificationCategory(identifier: Category.shortcutNothing, actions: [], intentIdentifiers: []),
             UNNotificationCategory(identifier: Category.askFirst, actions: [askClean, askReview], intentIdentifiers: []),
-            UNNotificationCategory(identifier: Category.offerAutomatic, actions: [switchAutomatic, keepAsking], intentIdentifiers: [])
+            UNNotificationCategory(identifier: Category.offerAutomatic, actions: [switchAutomatic, keepAsking], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Category.trashedAppLeftovers, actions: [reviewLeftovers, leftoversNotNow], intentIdentifiers: [])
         ])
     }
 
@@ -170,6 +182,14 @@ final class NotificationService: NSObject, ObservableObject {
         await post(content, id: "shortcut-\(runID.uuidString)")
     }
 
+    /// A Shortcuts result with nothing to undo (WorktreesShortcuts board: "Stopped 3 leftover servers…").
+    func postShortcutMessage(_ text: String) async {
+        let content = UNMutableNotificationContent()
+        content.body = text
+        content.categoryIdentifier = Category.shortcutNothing
+        await post(content, id: "shortcut-\(UUID().uuidString)")
+    }
+
     /// GetSpaceBack board, "When there is nothing to do".
     func postShortcutNothingToDo(_ text: String) async {
         let content = UNMutableNotificationContent()
@@ -216,6 +236,16 @@ final class NotificationService: NSObject, ObservableObject {
         content.body = "You approved the last \(AutoSweepTrustLadder.approvalsBeforeOffer) runs without changes. Furl can do it and tell you after."
         content.categoryIdentifier = Category.offerAutomatic
         return await post(content, id: "autosweep-offer-automatic")
+    }
+
+    /// LeftoversWhatsNew board: no title, so macOS shows "Furl" above the body, as drawn.
+    /// Returns whether it was shown (false with notifications off).
+    func postTrashedAppLeftovers(_ app: TrashedApp, bytes: Int64) async -> Bool {
+        let content = UNMutableNotificationContent()
+        content.body = TrashedAppLeftovers.body(appName: app.name, bytes: bytes)
+        content.categoryIdentifier = Category.trashedAppLeftovers
+        content.userInfo = [Self.bundleIDKey: app.bundleID, Self.appNameKey: app.name]
+        return await post(content, id: "leftovers-\(app.bundleID.lowercased())")
     }
 
     func postTest() async {
@@ -275,7 +305,11 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     ) async {
         let action = response.actionIdentifier
         let category = response.notification.request.content.categoryIdentifier
-        let runID = (response.notification.request.content.userInfo[Self.runIDKey] as? String).flatMap(UUID.init)
+        let userInfo = response.notification.request.content.userInfo
+        let runID = (userInfo[Self.runIDKey] as? String).flatMap(UUID.init)
+        let leftovers = (userInfo[Self.bundleIDKey] as? String).flatMap { id in
+            (userInfo[Self.appNameKey] as? String).map { (id, $0) }
+        }
         await MainActor.run {
             switch action {
             case Action.cleanNow: self.onCleanNow?()
@@ -286,7 +320,9 @@ extension NotificationService: UNUserNotificationCenterDelegate {
             case Action.undoRun:
                 if let runID { self.onUndoRun?(runID) } else { self.onOpenHistory?() }
             case Action.switchToAutomatic: self.onSwitchToAutomatic?()
-            case Action.keepAsking: break
+            case Action.keepAsking, Action.leftoversNotNow: break
+            case Action.reviewLeftovers:
+                if let leftovers { self.onReviewLeftovers?(leftovers.0, leftovers.1) }
             default:
                 // Clicking the notification body.
                 switch category {
@@ -295,6 +331,8 @@ extension NotificationService: UNUserNotificationCenterDelegate {
                 case Category.shortcutResult: self.onOpenHistory?()
                 case Category.askFirst: self.onAskReview?()
                 case Category.offerAutomatic: break
+                case Category.trashedAppLeftovers:
+                    if let leftovers { self.onReviewLeftovers?(leftovers.0, leftovers.1) }
                 default: self.onReview?()
                 }
             }

@@ -57,14 +57,21 @@ struct SpaceSteps: Equatable {
     var leftoverCount = 0
     var largeFileBytes: Int64 = 0
     var largeFileCount = 0
+    /// Old Node, Python and Rust versions no project asks for (DevTools board). Homebrew and global
+    /// packages stay out of every total.
+    var oldVersionBytes: Int64 = 0
+    var oldVersionCount = 0
 
-    var quickLookBytes: Int64 { worktreeBytes + duplicateBytes + leftoverBytes }
+    var quickLookBytes: Int64 { worktreeBytes + duplicateBytes + leftoverBytes + oldVersionBytes }
+    /// The part of Quick look the Cleanup Tray can hold (old versions are removed from Developer tools).
+    var trayBytes: Int64 { worktreeBytes + duplicateBytes + leftoverBytes }
 
     /// "Your call": large files not changed in this long.
     static let largeFileAge: TimeInterval = 365 * 86_400
 
     static func make(plan: AppState.SafeCleanupPlan, worktrees: [WorktreeItem], duplicates: [DuplicateGroup],
-                     leftovers: [OrphanedAppDataGroup], largeFiles: [LargeFileItem], now: Date = Date()) -> SpaceSteps {
+                     leftovers: [OrphanedAppDataGroup], largeFiles: [LargeFileItem],
+                     oldVersions: [DevVersion] = [], now: Date = Date()) -> SpaceSteps {
         var steps = SpaceSteps(safeBytes: plan.bytes)
         var counted = Set(plan.paths)
         let safeSizes = plan.paths.map { ($0, plan.itemBytes[$0] ?? 0) }
@@ -90,6 +97,12 @@ struct SpaceSteps: Equatable {
             steps.duplicateBytes += group.reclaimableBytes
             steps.duplicateCount += max(0, group.files.count - 1)
             duplicatePaths.formUnion(group.files.map(\.path))
+        }
+
+        // Old language versions live in tool folders no other step looks at.
+        for version in oldVersions where version.isRemovable && !isInside(version.path, counted) {
+            steps.oldVersionBytes += version.sizeBytes
+            steps.oldVersionCount += 1
         }
 
         // Your call: large files nobody has changed in a year, not already counted above.
@@ -118,13 +131,13 @@ struct SpaceSteps: Equatable {
 extension AppState {
     var spaceSteps: SpaceSteps {
         SpaceSteps.make(plan: safeCleanupPlan, worktrees: worktrees, duplicates: duplicateGroups,
-                        leftovers: orphanedGroups, largeFiles: largeFiles)
+                        leftovers: orphanedGroups, largeFiles: largeFiles, oldVersions: devTools.unusedVersions)
     }
 
     /// The Overview's "Move X to Trash": the same path as the menu bar's "Clean safe items" (always the
     /// Trash, re-checked on disk right before moving, one History entry, one Undo), limited to the
     /// items the button showed.
-    func cleanSafeNow(store: AutoSweepStore, confirmedPaths: [String]) async {
+    func cleanSafeNow(store: AutoSweepStore, confirmedPaths: [String], fromFinishedParts: Bool = false) async {
         let disk = diskUsage
         var names: [String: String] = [:]
         var sizes: [String: Int64] = [:]
@@ -133,7 +146,8 @@ extension AppState {
             names[item.path] = Self.friendlyName(item)
             sizes[item.path] = item.sizeBytes
         }
-        guard let run = await cleanSafeItems(store: store, trigger: .overview, confirmedPaths: confirmedPaths),
+        guard let run = await cleanSafeItems(store: store, trigger: .overview, confirmedPaths: confirmedPaths,
+                                             fromFinishedParts: fromFinishedParts),
               run.totalItems > 0 else { return }
         lastSafeClean = SafeCleanSummary(
             run: run,
@@ -173,39 +187,5 @@ extension AppState {
         if await undo(summary.run), lastSafeClean?.run.id == summary.run.id {
             lastSafeClean = nil
         }
-    }
-
-    /// Bytes of Furl's own items still in the Trash (the Trash ledger); the user's own items aren't counted.
-    func furlTrashBytes(store: AutoSweepStore) -> Int64 {
-        store.ledger.reduce(Int64(0)) { $0 + ($1.bytes ?? 0) }
-    }
-
-    /// "Empty Furl's items…": permanently removes only what Furl itself moved to the Trash. The caller
-    /// confirms first; the user's own Trash items are never touched.
-    func emptyFurlTrashItems(store: AutoSweepStore) async {
-        guard !isCleaning else { return }
-        store.pruneLedger()
-        let entries = store.ledger
-        guard !entries.isEmpty else { return }
-        isCleaning = true
-        defer { isCleaning = false }
-        let outcome = await Task.detached(priority: .userInitiated) {
-            Self.permanentlyRemove(entries)
-        }.value
-        store.removeFromLedger(outcome.removed)
-        let count = entries.filter { outcome.removed.contains($0.trashPath) }.count
-        recordFreed(outcome.bytes, items: count, category: .trash)
-        if outcome.bytes > 0 || count > 0 {
-            ActivityLog.shared.recordEmptyTrash(bytes: outcome.bytes, count: count)
-            // Those items are gone for good now.
-            lastUndo = nil
-            lastSafeClean = nil
-            statusBanner = "Emptied Furl’s items from the Trash (\(FileSizeHelper.formatBytes(outcome.bytes)) freed)."
-        }
-        if !outcome.errors.isEmpty {
-            errorBanner = outcome.errors.joined(separator: "\n")
-        }
-        ActivityLog.shared.refreshRestorable()
-        refreshDiskInfo()
     }
 }

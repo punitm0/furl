@@ -540,8 +540,8 @@ extension TrayItem {
 
 extension TrayItem {
     /// Everything the Overview hero total counts, for "Review items first". Ticked the way each section
-    /// pre-selects: Safe junk and mergeable worktrees. Review-rated or permanent junk, app leftovers and
-    /// duplicate copies are listed unticked. Leftovers are a guess (a Library entry no installed app
+    /// pre-selects: Safe junk only. Merged worktrees (removing one is permanent, WorktreesShortcuts board),
+    /// review-rated or permanent junk, app leftovers and duplicate copies are listed unticked. Leftovers are a guess (a Library entry no installed app
     /// claims), and the Leftovers screen never pre-selects them either.
     /// Like `AppState.totalReclaimableBytes`, an item inside a ticked item is left out: it goes with it.
     /// The Trash's size is part of the hero total too, but it isn't an item the tray can hold.
@@ -552,7 +552,11 @@ extension TrayItem {
         duplicates: [DuplicateGroup]
     ) -> [TrayItem] {
         var candidates: [TrayItem] = []
-        candidates += worktrees.filter(\.canAutoSelect).map { TrayItem.worktree($0) }
+        candidates += worktrees.filter(\.canAutoSelect).map { tree in
+            var tray = TrayItem.worktree(tree)
+            tray.included = false
+            return tray
+        }
         candidates += junk.map { item in
             var tray = TrayItem.junk(item)
             tray.included = item.risk == .safe && !item.isPermanent

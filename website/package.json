@@ -2,7 +2,7 @@
   "name": "furl-website",
   "type": "module",
   "private": true,
-  "license": "GPL-3.0-or-later",
+  "license": "MIT",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

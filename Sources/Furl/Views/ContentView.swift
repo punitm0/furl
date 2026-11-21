@@ -8,10 +8,22 @@ struct ContentView: View {
     @ObservedObject private var support = SupportStore.shared
     @ObservedObject private var inspector = InspectorStore.shared
     @ObservedObject private var reportProblem = ReportProblemStore.shared
+    @ObservedObject private var whatsNew = WhatsNewStore.shared
     @State private var errorExpanded = false
     @State private var didRunLaunchScan = false
+    @ObservedObject private var onboarding = OnboardingStore.shared
 
     var body: some View {
+        // WelcomeAccess board: first run covers the window, then the Overview (and the launch
+        // scan, which waits for the main screens to appear).
+        if onboarding.isActive {
+            OnboardingView(store: onboarding)
+        } else {
+            mainContent
+        }
+    }
+
+    private var mainContent: some View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(min: 248, ideal: 264, max: 320)
@@ -136,7 +148,11 @@ struct ContentView: View {
             state.refreshDiskInfo()
             if state.scanOnLaunch && !didRunLaunchScan {
                 didRunLaunchScan = true
-                await state.scanAll()
+                // FirstScan board: a brand-new install waits on the Overview's "before" hero, where the
+                // user starts the first scan. Later launches scan by themselves as before.
+                let noSavedIndex = await ScanIndexCache.shared.needsFirstWalk()
+                let brandNew = FirstScanRecord.shared.isFirstScan && !state.hasScannedAnything && noSavedIndex
+                if !brandNew { await state.scanAll() }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -152,6 +168,12 @@ struct ContentView: View {
         // Help › Report a Problem…, Settings › General › Help and About.
         .sheet(isPresented: $reportProblem.isPresented) {
             ReportProblemSheet(state: state)
+        }
+        // LeftoversWhatsNew board: once per version, after an update.
+        .sheet(item: $whatsNew.pending) { notes in
+            WhatsNewSheet(notes: notes, onChangelog: { whatsNew.openChangelog() },
+                          onClose: { whatsNew.pending = nil })
+                .onAppear { whatsNew.markShown(notes) }
         }
     }
 

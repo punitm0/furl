@@ -29,7 +29,7 @@ func streamCheck() {
     print("Streaming check (no shared index; first-scan path):")
     do {
         let log = EmitLog()
-        let r = JunkScanner.scan(projectRoots: roots, staleDays: 30, includeToolItems: false, progress: ScanProgress()) { log.note($0.count) }
+        let r = JunkScanner.scan(projectRoots: roots, staleDays: 30, includeToolItems: false, progress: ScanProgress(), emit: { log.note($0.count) })
         report("Caches & Junk", log, total: r.count)
     }
     do {

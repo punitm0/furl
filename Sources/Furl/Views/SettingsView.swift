@@ -19,6 +19,7 @@ struct SettingsView: View {
     @AppStorage(SettingsTab.storageKey) private var selectedTab: SettingsTab = .general
     @Environment(\.openWindow) private var openWindow
     @AppStorage(UpdateChecker.Keys.automaticChecks) private var automaticUpdateChecks = true
+    @AppStorage(TrashedAppLeftovers.enabledKey) private var notifyTrashedAppLeftovers = true
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -90,6 +91,14 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.danger)
                 }
+            }
+
+            // LeftoversWhatsNew board: on by default, with the other notifications.
+            Section("Notifications") {
+                Toggle("Offer to remove leftovers when an app goes to the Trash", isOn: $notifyTrashedAppLeftovers)
+                Text("Only while Furl is open, when the app left 50 MB or more. Once per app.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.inkSecondary)
             }
 
             Section("Stats") {

@@ -127,6 +127,8 @@ struct SummaryCard: View {
     var unit: String? = nil
     var tag: String? = nil
     var isLoading: Bool = false
+    /// A check mark in place of the chevron: this area just finished (FirstScan board).
+    var isDone: Bool = false
     var action: (() -> Void)? = nil
 
     @State private var isHovering = false
@@ -157,6 +159,11 @@ struct SummaryCard: View {
                     }
                     if isLoading {
                         ProgressView().controlSize(.small)
+                    } else if isDone {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.sweep)
+                            .accessibilityLabel("Done")
                     } else if action != nil {
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))

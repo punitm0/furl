@@ -30,6 +30,8 @@ struct DiskView: View {
                 }
             }
 
+            LimitedResultsLine(screen: .disk, hasResults: state.spaceRoot != nil)
+
             if state.diskView == .big {
                 LiveScanStripSlot(status: state.liveScans[.disk], onStop: { state.cancelSpaceScan() },
                                   onRescan: { Task { await state.scanSpace() } })

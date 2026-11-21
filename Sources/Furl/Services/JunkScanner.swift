@@ -14,24 +14,40 @@ struct JunkCommand: Sendable, Hashable {
 }
 
 enum JunkScanner {
+    /// Which checks a scan runs. A first scan runs `.quick` right away, while the home folder is still
+    /// being read for the first time, then `.rest` once that walk is done (FirstScan board: fastest
+    /// first). Every other caller runs `.all`.
+    enum Pass: Sendable {
+        case all
+        /// Fixed-location checks that need no walk of the home folder: build and package caches,
+        /// app caches and logs.
+        case quick
+        /// Everything `.quick` leaves out.
+        case rest
+    }
+
     /// `includeToolItems: false` skips Docker and Simulator items: they run external tools
     /// (Docker may talk to a remote engine) and are only ever offered in the main window.
     /// `emit` gets each check's items as soon as that check finishes (results still arriving);
-    /// the return value is the whole, sorted list. `progress` counts checks done of all checks and
+    /// the return value is the whole, sorted list. `stepDone` gets each check's title once it has
+    /// finished, after its `emit`. `progress` counts checks done of all checks and
     /// stops between checks once cancelled.
     static func scan(projectRoots: [String], staleDays: Int = 30, includeToolItems: Bool = true,
-                     progress: ScanProgress? = nil, emit: (([JunkItem]) -> Void)? = nil) -> [JunkItem] {
+                     pass: Pass = .all, progress: ScanProgress? = nil,
+                     emit: (([JunkItem]) -> Void)? = nil, stepDone: ((String) -> Void)? = nil) -> [JunkItem] {
         var items: [JunkItem] = []
         var pkgCachePaths = Set<String>()
-        var steps: [(String, () -> [JunkItem])] = [
-            // Quick, fixed-location checks first so results arrive in seconds; the two walks of the
-            // project folders (build folders, .DS_Store) go last.
-            ("Checking package manager caches", {
+        // Quick, fixed-location checks first so results arrive in seconds; the two walks of the
+        // project folders (build folders, .DS_Store) go last.
+        let quick: [(String, () -> [JunkItem])] = [
+            (quickStepTitles[0], {
                 let found = scanPackageCaches()
                 pkgCachePaths = Set(found.map(\.path))
-                return found
+                return found + scanXcodeBuildFolders()
             }),
-            ("Checking app caches and logs", { scanSystemCachesAndLogs(excludingPaths: pkgCachePaths) }),
+            (quickStepTitles[1], { scanSystemCachesAndLogs(excludingPaths: pkgCachePaths) })
+        ]
+        var rest: [(String, () -> [JunkItem])] = [
             ("Checking old installers", { scanOldInstallers(staleDays: staleDays) }),
             ("Checking local AI models", { scanLocalAIModels() }),
             ("Checking browser caches", { scanBrowserCaches() }),
@@ -40,8 +56,14 @@ enum JunkScanner {
             ("Checking .DS_Store files", { scanDSStore(in: projectRoots) })
         ]
         if includeToolItems {
-            steps.insert(("Checking Docker", { scanDocker() }), at: steps.count - 2)
-            steps.insert(("Checking Simulators", { scanSimulators() }), at: steps.count - 2)
+            rest.insert(("Checking Docker", { scanDocker() }), at: rest.count - 2)
+            rest.insert(("Checking Simulators", { scanSimulators() }), at: rest.count - 2)
+        }
+        let steps: [(String, () -> [JunkItem])]
+        switch pass {
+        case .all: steps = quick + rest
+        case .quick: steps = quick
+        case .rest: steps = rest
         }
         progress?.setSteps(done: 0, total: steps.count)
         for (title, step) in steps {
@@ -50,25 +72,27 @@ enum JunkScanner {
             let found = step().filter { $0.sizeBytes > 0 }
             items.append(contentsOf: found)
             if !found.isEmpty { emit?(found) }
+            stepDone?(title)
             progress?.advanceStep()
         }
 
         return items.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private static func scanDevArtifacts(in roots: [String], staleDays: Int) -> [JunkItem] {
+    /// The `.quick` checks, in order. The Overview names the finished ones while a first scan runs.
+    static let quickStepTitles = ["Checking build and package caches", "Checking app caches and logs"]
+
+    /// Fixed Xcode / Simulator locations (not inside any project, so no walk is needed).
+    private static func scanXcodeBuildFolders() -> [JunkItem] {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
-        var items: [JunkItem] = []
-
-        // Fixed Xcode / Simulator locations
         let fixedTargets: [(path: String, name: String, risk: RiskLevel, reason: String)] = [
             ("\(home)/Library/Developer/Xcode/DerivedData", "Xcode build files · DerivedData", .safe, "Rebuilt automatically by Xcode when needed"),
             ("\(home)/Library/Developer/Xcode/iOS DeviceSupport", "Xcode iOS DeviceSupport", .moderate, "Debug symbols for older iOS devices"),
             ("\(home)/Library/Developer/Xcode/Archives", "Xcode Archives", .review, "Old app archive builds (.xcarchive)"),
             ("\(home)/Library/Developer/CoreSimulator/Caches", "CoreSimulator Caches", .safe, "Cached simulator runtime data")
         ]
-
+        var items: [JunkItem] = []
         for target in fixedTargets where fm.fileExists(atPath: target.path) {
             let url = URL(fileURLWithPath: target.path)
             let size = FileSizeHelper.directorySize(at: url)
@@ -85,6 +109,12 @@ enum JunkScanner {
                 ))
             }
         }
+        return items
+    }
+
+    private static func scanDevArtifacts(in roots: [String], staleDays: Int) -> [JunkItem] {
+        let fm = FileManager.default
+        var items: [JunkItem] = []
 
         // Walk project roots for node_modules, .next, .turbo, dist, .venv, target, __pycache__
         let heavyDirs: Set<String> = [

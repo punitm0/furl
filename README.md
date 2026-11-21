@@ -102,8 +102,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT
 
 ## License
 
-Copyright (C) 2026 Furl.
-
-Furl is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It comes with no warranty. See [LICENSE](LICENSE).
+Furl is released under the [MIT License](LICENSE). Copyright (c) 2026 Punit Makwana.
 
 Claude, OpenAI Codex, Cursor, Gemini and GitHub Copilot are trademarks of their respective owners. Furl shows their logos only to identify which tool started a process and is not affiliated with or endorsed by them. Logo shapes come from [Simple Icons](https://simpleicons.org) (CC0).

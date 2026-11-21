@@ -555,6 +555,8 @@ case "spotlight":
     await spotlight(minMB: Int64(intArg("--min-mb", 100)))
 case "stream":
     streamCheck()
+case "firstscan":
+    try await benchFirstScan(width: width)
 case "hotprobe":
     hotProbe(paths: Array(positional), waitSeconds: intArg("--wait", 60))
 default:
@@ -569,6 +571,7 @@ default:
       sizeonly <folder>…                   re-size cost: whole size-only folder vs one level-2 sub-folder
       spotlight [--min-mb N]               Spotlight fast path
       stream                               time to first streamed result vs full scan, per scanner
+      firstscan                            time to the first safe number: quick checks alongside the walk
       hotprobe <folder>… [--wait S]        re-read cost of huge flat folders; FSEvents folder vs file events
       --purge                              try `sudo -n purge` first (cold cache)
     """)

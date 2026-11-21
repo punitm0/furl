@@ -10,16 +10,19 @@ struct ActivityTrashedItem: Codable, Hashable, Sendable {
     /// without one (and without a size) can't be confirmed and isn't offered for Undo.
     var fileID: UInt64?
     var sizeBytes: Int64?
+    /// See `TrashedItem.stamp`. Optional so older activity.json files still decode.
+    var stamp: CleanupStamp?
 
     init(_ item: TrashedItem) {
         originalPath = item.originalPath
         trashPath = item.trashPath
         fileID = item.fileID
         sizeBytes = item.sizeBytes > 0 ? item.sizeBytes : nil
+        stamp = item.stamp
     }
 
     var asTrashedItem: TrashedItem {
-        TrashedItem(originalPath: originalPath, trashPath: trashPath, sizeBytes: sizeBytes ?? 0, fileID: fileID)
+        TrashedItem(originalPath: originalPath, trashPath: trashPath, sizeBytes: sizeBytes ?? 0, fileID: fileID, stamp: stamp)
     }
 }
 
@@ -144,6 +147,7 @@ final class ActivityLog: ObservableObject {
         compress.onRunCompleted = { [weak self] run in
             previousRun?(run)
             self?.recordCompress(run)
+            self?.recordOriginalsInTrash(run.undoRecords)
         }
         let previousUndo = compress.onUndoCompleted
         compress.onUndoCompleted = { [weak self] restored, notRestored in
@@ -156,6 +160,7 @@ final class ActivityLog: ObservableObject {
         shrink.onRunCompleted = { [weak self] run in
             previousShrinkRun?(run)
             self?.recordShrink(run)
+            self?.recordOriginalsInTrash(run.undoRecords)
         }
         let previousShrinkUndo = shrink.onUndoCompleted
         shrink.onUndoCompleted = { [weak self] restored, notRestored in
@@ -168,11 +173,34 @@ final class ActivityLog: ObservableObject {
         formats.onRunCompleted = { [weak self] run in
             previousFormatRun?(run)
             self?.recordFormat(run)
+            self?.recordOriginalsInTrash(run.undoRecords)
         }
         let previousFormatUndo = formats.onUndoCompleted
         formats.onUndoCompleted = { [weak self] restored, notRestored in
             previousFormatUndo?(restored, notRestored)
             self?.liveRunUndone(.format, restored: restored, notRestored: notRestored)
+        }
+    }
+
+    /// Compress, Shrink and Format keep originals in the Trash. They're Furl's items too, so "Empty
+    /// Furl's items" can free them (TrashEmpty board). Read now, right after the run, off the main thread.
+    private func recordOriginalsInTrash(_ records: [CompressUndoRecord]) {
+        let moved = records.compactMap { record -> (original: String, trash: String, fileID: UInt64)? in
+            guard let trash = record.trashPath, let fileID = record.trashFileID else { return nil }
+            return (record.originalPath, trash, fileID)
+        }
+        guard !moved.isEmpty else { return }
+        Task {
+            let items = await Task.detached(priority: .utility) {
+                moved.compactMap { item -> TrashedItem? in
+                    guard DeletionService.fileID(item.trash) == item.fileID,
+                          let stamp = CleanupStamp.read(item.trash) else { return nil }
+                    let size = FileSizeHelper.directorySize(at: URL(fileURLWithPath: item.trash))
+                    return TrashedItem(originalPath: item.original, trashPath: item.trash, sizeBytes: size,
+                                       fileID: item.fileID, stamp: stamp)
+                }
+            }.value
+            AppServices.autoSweep.recordTrashed(items)
         }
     }
 
@@ -354,6 +382,22 @@ final class ActivityLog: ObservableObject {
         restorableGeneration += 1
         restorableIDs = []
         goneRunIDs = Set(AppServices.autoSweep.history.filter { !$0.trashed.isEmpty }.map(\.id))
+    }
+
+    /// "Empty Furl's items" (TrashEmpty board): Permanent, never undoable. Only Furl's own items went,
+    /// so other entries' Undo is re-checked rather than switched off.
+    func recordEmptyFurlTrash(bytes: Int64, count: Int, skipped: Int) {
+        add(ActivityEntry(
+            date: Date(),
+            kind: .emptyTrash,
+            title: "Emptied Furl’s items from the Trash",
+            detail: "\(count) item\(count == 1 ? "" : "s") deleted for good",
+            itemCount: count,
+            diskBytes: bytes,
+            permanentBytes: bytes,
+            skippedCount: skipped > 0 ? skipped : nil
+        ))
+        refreshRestorable()
     }
 
     /// The tray runs several sections' cleanups; they become one entry.

@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
         static let duplicateMinMB = "duplicateMinMB"
         static let smartIgnored = "smartReviewIgnoredPaths"
         static let smartUseModel = "smartReviewUseModel"
+        static let keptDevVersions = "devToolsKeptVersions"
     }
 
     private let defaults = UserDefaults.standard
@@ -147,6 +148,16 @@ final class AppState: ObservableObject {
     @Published var isScanningLargeFiles = false
     @Published var isScanningDuplicates = false
     @Published var isScanningSpace = false
+    /// Apps & Leftovers › Developer tools; runs beside the apps scan.
+    @Published var isScanningDevTools = false
+    @Published var hasScannedDevTools = false
+    @Published var devTools = DevToolsSnapshot()
+    /// Set by the Overview's Quick look so Apps & Leftovers opens on Developer tools.
+    @Published var openDevToolsFilter = false
+    /// "Always keep Node 16": keys like "node:16" that are never listed as unused.
+    @Published var keptDevVersions: Set<String> {
+        didSet { defaults.set(Array(keptDevVersions).sorted(), forKey: Keys.keptDevVersions) }
+    }
     @Published var isCleaning = false
     /// The live strip under each scan-based screen's header while results are still arriving,
     /// and for a moment after (finished) or until the next scan (stopped).
@@ -167,6 +178,9 @@ final class AppState: ObservableObject {
 
     @Published private(set) var hasScannedWorktrees = false
     @Published private(set) var hasScannedJunk = false
+    /// Titles of the junk checks finished in the current (or last) junk scan, in order. The first-scan
+    /// Overview names them ("Build and package caches done") while the rest still runs.
+    @Published private(set) var junkPartsDone: [String] = []
     @Published private(set) var hasScannedApps = false
     @Published private(set) var hasScannedLargeFiles = false
     @Published private(set) var hasScannedDuplicates = false
@@ -200,6 +214,8 @@ final class AppState: ObservableObject {
 
     @Published var installedApps: [InstalledAppItem] = []
     @Published var orphanedGroups: [OrphanedAppDataGroup] = [] { didSet { diskFindingsCache = nil } }
+    /// Set by "Review…" on the trashed-app leftovers offer; Apps & Leftovers opens its confirm and clears it.
+    @Published var leftoversReviewID: String?
 
     /// Every file found at the threshold used for the last scan; `largeFiles` is the subset above the current threshold.
     var allLargeFiles: [LargeFileItem] = []
@@ -306,6 +322,7 @@ final class AppState: ObservableObject {
             ? 1 : max(0, Int64(defaults.integer(forKey: Keys.duplicateMinMB)))
         smartIgnoredPaths = Set(defaults.stringArray(forKey: Keys.smartIgnored) ?? [])
         smartUseModel = defaults.object(forKey: Keys.smartUseModel) == nil ? true : defaults.bool(forKey: Keys.smartUseModel)
+        keptDevVersions = Set(defaults.stringArray(forKey: Keys.keptDevVersions) ?? [])
         StatsLedger.shared.$lifetimeFreedBytes.assign(to: &$lifetimeFreedBytes)
     }
 
@@ -315,6 +332,11 @@ final class AppState: ObservableObject {
 
     var hasScannedAnything: Bool {
         hasScannedWorktrees || hasScannedJunk || hasScannedApps || hasScannedLargeFiles || hasScannedDuplicates
+    }
+
+    /// What "Select merged (N)" ticks: merged worktrees with nothing uncommitted (WorktreesShortcuts board).
+    nonisolated static func mergedWorktreeSelection(_ worktrees: [WorktreeItem]) -> [WorktreeItem] {
+        worktrees.filter { $0.canAutoSelect && $0.isBulkSelectable }
     }
 
     var totalWorktreeReclaimableBytes: Int64 {
@@ -432,6 +454,7 @@ final class AppState: ObservableObject {
         lastSafeClean = nil
         refreshDiskInfo()
         fullScanInFlight = true
+        FirstScanRecord.shared.scanStarted()
         async let wt: Void = scanWorktrees()
         async let jk: Void = scanJunk()
         async let ap: Void = scanApps()
@@ -450,6 +473,7 @@ final class AppState: ObservableObject {
         guard fullScanInFlight, !isScanningAny, pendingRescans.isDisjoint(with: areas) else { return }
         fullScanInFlight = false
         lastScanDate = Date()
+        FirstScanRecord.shared.scanFinished()
     }
 
     // MARK: Live results (canvas: "Results still arriving")
@@ -477,6 +501,7 @@ final class AppState: ObservableObject {
 
     /// Stop from the live strip: whatever was found stays on screen.
     func stopScan(_ section: SidebarSection) {
+        if fullScanInFlight, liveProgress[section] != nil { FirstScanRecord.shared.scanStopped() }
         liveProgress[section]?.cancel()
     }
 
@@ -497,7 +522,6 @@ final class AppState: ObservableObject {
         worktrees = []
         selectedWorktreeIDs = []
         cleanupStamps.worktrees = [:]
-        var offered = Set<String>()
         let stream: ScanStream<([WorktreeItem], [String: CleanupStamp])> = beginStream(
             .worktrees, noun: .worktrees,
             totals: { [unowned self] in (worktrees.count, totalWorktreeReclaimableBytes) }
@@ -507,10 +531,9 @@ final class AppState: ObservableObject {
             let fresh = batches.flatMap(\.0).filter { !known.contains($0.worktreePath) && !isExcluded($0.worktreePath) }
             for batch in batches { cleanupStamps.worktrees.merge(batch.1) { _, new in new } }
             guard !fresh.isEmpty else { return }
+            // WorktreesShortcuts board: nothing starts ticked. Removing a worktree is permanent, so the
+            // user ticks them with "Select merged (N)" (`mergedWorktreeSelection`).
             worktrees = (worktrees + fresh).sorted(by: Self.worktreeOrder)
-            for item in fresh where offered.insert(item.id).inserted && item.canAutoSelect {
-                selectedWorktreeIDs.insert(item.id)
-            }
         }
         let progress = stream.progress
         let batcher = stream.batcher
@@ -562,12 +585,19 @@ final class AppState: ObservableObject {
         selectedJunkIDs = []
         isResettingJunkTicks = false
         cleanupStamps.junk = [:]
+        junkPartsDone = []
         var offered = Set<String>()
-        let stream: ScanStream<([JunkItem], [String: CleanupStamp])> = beginStream(
+        // Each batch is a check's items, or (no items) the title of a check that just finished.
+        let stream: ScanStream<([JunkItem], [String: CleanupStamp], String?)> = beginStream(
             .junk, noun: .items,
             totals: { [unowned self] in (junkItems.count, totalJunkReclaimableBytes) }
         ) { [weak self] batches in
             guard let self else { return }
+            defer {
+                // After this flush's items are merged, so a part never reads "done" without its items.
+                let finished = batches.compactMap(\.2)
+                if !finished.isEmpty { junkPartsDone += finished }
+            }
             let known = Set(junkItems.map(\.id))
             let found = batches.flatMap(\.0).filter { !known.contains($0.id) && !isExcluded($0.path) }
             for batch in batches { cleanupStamps.junk.merge(batch.1) { _, new in new } }
@@ -584,17 +614,34 @@ final class AppState: ObservableObject {
         }
         let progress = stream.progress
         let batcher = stream.batcher
-        progress.setPhase("Looking through your home folder")
-        let index = await ScanIndexCache.shared.homeIndex(progress: progress)
+        // FirstScan board, fastest first: while the home folder is read for the first time (about a
+        // minute), the fixed-location checks run right away without it, so a safe number shows in
+        // seconds. Later scans patch the saved index in about a second and wait for it as before.
+        let quickFirst = await ScanIndexCache.shared.needsFirstWalk()
+        if quickFirst {
+            // Starts the shared walk now (other areas join it) so it runs alongside the quick checks.
+            Task { _ = await ScanIndexCache.shared.homeIndex() }
+            let roots = projectRoots
+            _ = await Task.detached(priority: .userInitiated) {
+                JunkScanner.scan(projectRoots: roots, staleDays: days, pass: .quick, progress: progress,
+                                 emit: { items in batcher.append((items, CleanupStamp.read(junk: items), nil)) },
+                                 stepDone: { title in batcher.append(([], [:], title)) })
+            }.value
+        }
+        if !progress.isCancelled {
+            progress.setPhase("Looking through your home folder")
+        }
+        let index = progress.isCancelled ? nil : await ScanIndexCache.shared.homeIndex(progress: progress)
         if !progress.isCancelled {
             updateDiscoveredProjects(from: index)
             let roots = projectRoots
             // Every result streams in; the list on screen is the result (see scanWorktrees).
             _ = await Task.detached(priority: .userInitiated) {
                 ScanIndexContext.$index.withValue(index) {
-                    JunkScanner.scan(projectRoots: roots, staleDays: days, progress: progress) { items in
-                        batcher.append((items, CleanupStamp.read(junk: items)))
-                    }
+                    JunkScanner.scan(projectRoots: roots, staleDays: days, pass: quickFirst ? .rest : .all,
+                                     progress: progress,
+                                     emit: { items in batcher.append((items, CleanupStamp.read(junk: items), nil)) },
+                                     stepDone: { title in batcher.append(([], [:], title)) })
                 }
             }.value
         }
@@ -620,6 +667,8 @@ final class AppState: ObservableObject {
         }
         defer { runPendingRescan(.apps) }
         isScanningApps = true
+        // Developer tools are found beside the apps; their own flag tracks them.
+        Task { await scanDevTools() }
         installedApps = []
         orphanedGroups = []
         cleanupStamps.apps = [:]
@@ -1554,7 +1603,7 @@ final class AppState: ObservableObject {
     /// scan's modification date (and size, for duplicates); an item that fails is skipped whole. Each
     /// path is checked once more right before it moves, which matters most in permanent-delete mode.
     /// Skipped items are counted in `skippedCount` and logged (`noteSkippedSinceScan`).
-    private func delete(_ items: [CleanupItem], stamps: [String: CleanupStamp], context: String) async -> CleanupResult {
+    func delete(_ items: [CleanupItem], stamps: [String: CleanupStamp], context: String) async -> CleanupResult {
         isCleaning = true
         let mode = deletionMode
         let total = Set(items.flatMap(\.allPaths)).count
@@ -1622,7 +1671,7 @@ final class AppState: ObservableObject {
     /// copy meant to stay had changed); they count as skipped like `result.skippedCount`.
     /// `statsItems`: how many things the community stats count, when that isn't one per path
     /// (an uninstalled app is one item however many folders it had).
-    private func applyDeletionResult(_ result: CleanupResult, label: String, section: SidebarSection,
+    func applyDeletionResult(_ result: CleanupResult, label: String, section: SidebarSection,
                                      itemName: String? = nil, extraSkipped: Int = 0, statsItems: Int? = nil) {
         let skipped = result.skippedCount + extraSkipped
         lastSkippedCount = skipped

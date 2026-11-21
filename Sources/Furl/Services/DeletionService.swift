@@ -100,7 +100,8 @@ enum DeletionService {
                     try fm.trashItem(at: url, resultingItemURL: &trashedURL)
                     if let trashedPath = (trashedURL as URL?)?.path {
                         trashed.append(TrashedItem(originalPath: path, trashPath: trashedPath, sizeBytes: size,
-                                                   fileID: fileID(trashedPath)))
+                                                   fileID: fileID(trashedPath),
+                                                   stamp: CleanupStamp.read(trashedPath)))
                     }
                 case .permanent:
                     try fm.removeItem(at: url)

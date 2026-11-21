@@ -283,3 +283,19 @@ itself; Worktrees' 5–7 s is `git` (now run in parallel, ~12 at a time).
 | Large files ≥ 50 MB | 2 | 2 | identical set |
 | Duplicates ≥ 1 MB | 7 groups / 20 files | 7 / 20 | identical files |
 | Space Map of ~/Documents | 107 251 859 456 B / 3 327 462 files | 107 253 760 000 B / 3 327 575 files | 0.002 % apart (live writes); top-level children identical |
+
+## First scan: time to the first safe number (1.4.0, `ScanBench firstscan`)
+
+Measured 2026-11-21 on the development Mac (≈ 5.9 M files, 254 GB allocated; busy machine, other builds
+running). On a first scan there is no saved index, so the junk scan's fixed-location checks (build and
+package caches, app caches and logs) now run right away without it, alongside the home walk.
+
+| | Before (1.3.0) | After |
+|---|---:|---:|
+| First safe number on screen | ≈ 62.6 s (walk + index checks) | **2.0 s** (build and package caches) |
+| Safe step complete (app caches and logs) | ≈ 62.6 s | **4.9 s** |
+| Home walk, running alongside the quick checks | — | 62.4 s |
+| `ScanBench new` walk, pass 1 / pass 2 | 58.6 s / 57.8 s | 65.3 s / 62.0 s |
+
+The walker itself is unchanged; the `new` difference is machine load (±15 %, see caveats above). Later
+scans patch the saved index in about a second and run every check on it as before.

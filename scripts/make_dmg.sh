@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds build/Furl.dmg with the designed install window:
 # 660×400 window, 128 pt icons, Furl at (170,196), Applications at (490,196),
-# background from Resources/dmg (1x + 2x combined into one HiDPI TIFF).
+# background drawn by scripts/make_dmg_background.swift with the app's version (1x + 2x combined into
+# one HiDPI TIFF). Resources/dmg holds a copy of those images, used if drawing fails.
 #
 # Usage: ./scripts/make_dmg.sh            (builds the app first if build/Furl.app is missing)
 # Needs Finder automation permission the first time (macOS will ask) to lay out the window.
@@ -29,6 +30,14 @@ STAGE="$WORK/stage"
 mkdir -p "$STAGE/.background"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+# The footer shows the version of the app being packed (InstallHandoff board).
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+if swift "$ROOT/scripts/make_dmg_background.swift" "$VERSION" "$WORK/bg" >/dev/null; then
+  BG_1X="$WORK/bg/dmg-background.png"
+  BG_2X="$WORK/bg/dmg-background@2x.png"
+else
+  echo "Warning: couldn't draw the DMG background; using Resources/dmg (its footer version may be old)." >&2
+fi
 tiffutil -cathidpicheck "$BG_1X" "$BG_2X" -out "$STAGE/.background/background.tiff" >/dev/null
 
 # Writable image to lay out, then compress.

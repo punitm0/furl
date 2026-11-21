@@ -456,6 +456,9 @@ struct TrashedItem: Sendable, Hashable {
     /// Inode of the item in the Trash. Finder reuses Trash names, so a restore only moves an item
     /// whose inode still matches (see `DeletionService.restore`). nil for records saved without one.
     var fileID: UInt64? = nil
+    /// Kind and modification date of the item in the Trash, read right after it moved. "Empty Furl's
+    /// items" deletes only an item that still matches this, its inode and its size exactly.
+    var stamp: CleanupStamp? = nil
 }
 
 struct CleanupResult: Sendable {

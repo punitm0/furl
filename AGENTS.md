@@ -63,4 +63,4 @@ worker has vitest tests. Build with zero new warnings.
 
 ## License
 
-GPL-3.0-or-later. Contributions are licensed under the same terms.
+MIT. Contributions are licensed under the same terms.

@@ -34,7 +34,7 @@ final class ReclaimableTrayTests: XCTestCase {
         let included = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.included) })
         XCTAssertEqual(included["safe"], true)
         XCTAssertEqual(included["review"], false)
-        XCTAssertEqual(included["merged"], true)
+        XCTAssertEqual(included["merged"], false, "Removing a worktree is permanent, so it's listed unticked")
         XCTAssertNil(included["dirty"], "Worktrees the total doesn't count stay out")
         XCTAssertNil(included["active"])
         XCTAssertEqual(included["data:strong"], false, "Leftovers are a guess; the Leftovers screen never pre-selects them")
@@ -56,7 +56,9 @@ final class ReclaimableTrayTests: XCTestCase {
             leftovers: [], duplicates: []
         )
         let keys = Set(items.map(\.key))
-        XCTAssertFalse(keys.contains("nm"), "Goes with the merged worktree")
+        // The merged worktree is listed unticked, so the Safe node_modules inside it stands on its own.
+        XCTAssertTrue(keys.contains("nm"))
+        XCTAssertEqual(items.first { $0.key == "merged" }?.included, false)
         // The parent isn't ticked, so the Safe item inside it still stands on its own.
         XCTAssertTrue(keys.contains("inReview"))
         XCTAssertTrue(keys.contains("big"))

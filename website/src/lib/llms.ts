@@ -21,7 +21,7 @@ export const header = `# Furl
 
 - Latest version: ${latest.version} (${latest.date}). Release notes: ${SITE}/changelog/
 - Runs on macOS 14 Sonoma or later, Apple silicon and Intel. Smart Review's on-device model needs macOS 26 with Apple Intelligence; without it Smart Review uses its rules only.
-${site.checkoutUrl ? "- Pay what you like, including $0. Every feature is free either way.\n" : "- Every feature is free.\n"}- Open source under GPL-3.0-or-later: ${site.githubUrl}
+${site.checkoutUrl ? "- Pay what you like, including $0. Every feature is free either way.\n" : "- Every feature is free.\n"}- Open source under MIT: ${site.githubUrl}
 - Download: ${site.downloadUrl}
 - Builds are ad-hoc signed, not notarized: the first launch needs System Settings → Privacy & Security → Open Anyway (${SITE}/install/).
 - Furl checks for updates once a day and can install them and relaunch. Each update is verified against Furl's signature first. The check can be turned off in Settings.

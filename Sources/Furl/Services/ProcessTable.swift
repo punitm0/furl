@@ -71,6 +71,14 @@ enum ProcessTable {
         return (bsd.pbi_uid, start, Int32(bsd.pbi_ppid), bsd.pbi_status == UInt32(SZOMB))
     }
 
+    /// True while the process still has a terminal it can read from (an open terminal tab or window).
+    /// A process whose terminal closed reports no device. Unreadable processes count as attached, so
+    /// callers that only act on detached processes leave them alone.
+    static func isAttachedToTerminal(_ pid: Int32) -> Bool {
+        guard let bsd = bsdInfo(pid) else { return true }
+        return bsd.e_tdev != UInt32.max
+    }
+
     static func read(pid: Int32, requireUID: UInt32? = nil) -> ProcInfo? {
         var scratch = ArgsBuffer()
         return read(pid: pid, requireUID: requireUID, scratch: &scratch)

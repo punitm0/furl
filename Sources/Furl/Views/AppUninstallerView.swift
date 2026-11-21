@@ -20,6 +20,8 @@ private final class AppUninstallerViewModel: ObservableObject {
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All apps"
         case unused = "Not opened in 90+ days"
+        /// DevTools board: a third filter, so the sidebar and ⌘1–⌘8 don't change.
+        case developer = "Developer tools"
         var id: String { rawValue }
     }
 
@@ -39,6 +41,8 @@ private final class AppUninstallerViewModel: ObservableObject {
     @Published var appToClearCaches: InstalledAppItem?
     @Published var pendingConfirm: PendingConfirm?
     @Published var tickedRemovedIDs = Set<String>()
+    /// Ticked rows in the Developer tools filter.
+    @Published var tickedDevIDs = Set<String>()
     /// Ticks "Select sure matches" made, so a rescan can drop any that no longer qualify.
     var autoTickedIDs = Set<String>()
     @Published var showAllRemoved = false
@@ -113,38 +117,32 @@ struct AppUninstallerView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScreenHeader(title: "Apps & Leftovers", subtitle: "Each app with its caches, data and settings, plus data from apps you removed.") {
-                HeaderSearchField(text: $vm.searchText, prompt: "Search apps")
+                HeaderSearchField(text: $vm.searchText, prompt: "Search apps and tools")
             }
             toolbarBar
 
-            LiveScanStripSlot(status: state.liveScans[.apps], onStop: { state.stopScan(.apps) },
-                              onRescan: { Task { await state.scanApps() } })
+            LimitedResultsLine(screen: .apps, hasResults: state.hasScannedApps)
 
-            if state.isScanningApps && state.installedApps.isEmpty && state.orphanedGroups.isEmpty {
-                ScanningPlaceholder(message: "Measuring installed apps and their ~/Library data…",
-                                    status: state.liveScans[.apps])
-            } else if !state.hasScannedApps && !state.isScanningApps {
-                EmptyStatePlaceholder(
-                    systemImage: "square.stack.3d.up",
-                    title: "See What Each App Really Takes",
-                    message: "Scan /Applications and ~/Applications to see each app's caches, data and settings, clear what's rebuildable, or uninstall apps with their leftovers.",
-                    buttonTitle: "Scan Apps"
-                ) {
-                    Task { await state.scanApps() }
-                }
+            if vm.filter == .developer {
+                DevToolsList(state: state, searchText: vm.searchText, ticked: $vm.tickedDevIDs)
             } else {
-                listContent
+                appsContent
             }
         }
         .navigationTitle("Apps & Leftovers")
         .cleanSlateScreen()
-        .onChange(of: vm.filter) { _, filter in
+        .onAppear(perform: takeDevToolsHandoff)
+        .onChange(of: state.openDevToolsFilter) { _, _ in takeDevToolsHandoff() }
+        .onChange(of: vm.filter) { old, filter in
             // AppsOneList: sort switches to Last opened while the filter is on, and back when it's off.
             if filter == .unused {
                 vm.sortBeforeFilter = vm.sortOrder
                 vm.sortOrder = .lastOpened
-            } else {
+            } else if old == .unused {
                 vm.sortOrder = vm.sortBeforeFilter
+            }
+            if filter == .developer && !state.hasScannedDevTools && !state.isScanningDevTools {
+                Task { await state.scanDevTools() }
             }
             if selectedRemoved == nil { vm.selectedRemovedID = nil }
         }
@@ -162,6 +160,8 @@ struct AppUninstallerView: View {
         .sheet(item: $vm.pendingConfirm) { pending in
             confirmSheet(pending)
         }
+        .onAppear { openLeftoversReview() }
+        .onChange(of: state.leftoversReviewID) { _, _ in openLeftoversReview() }
         .confirmationDialog(
             "Clear caches and logs for \(vm.appToClearCaches?.name ?? "")?",
             isPresented: Binding(
@@ -184,6 +184,34 @@ struct AppUninstallerView: View {
                 Text("\(app.name) rebuilds these as it needs them; it may be a little slower the first time."
                      + (app.isRunning ? " It's running now — quitting it first is safest." : ""))
             }
+        }
+    }
+
+    private func takeDevToolsHandoff() {
+        guard state.openDevToolsFilter else { return }
+        state.openDevToolsFilter = false
+        vm.filter = .developer
+    }
+
+    @ViewBuilder
+    private var appsContent: some View {
+        LiveScanStripSlot(status: state.liveScans[.apps], onStop: { state.stopScan(.apps) },
+                          onRescan: { Task { await state.scanApps() } })
+
+        if state.isScanningApps && state.installedApps.isEmpty && state.orphanedGroups.isEmpty {
+            ScanningPlaceholder(message: "Measuring installed apps and their ~/Library data…",
+                                status: state.liveScans[.apps])
+        } else if !state.hasScannedApps && !state.isScanningApps {
+            EmptyStatePlaceholder(
+                systemImage: "square.stack.3d.up",
+                title: "See What Each App Really Takes",
+                message: "Scan /Applications and ~/Applications to see each app's caches, data and settings, clear what's rebuildable, or uninstall apps with their leftovers.",
+                buttonTitle: "Scan Apps"
+            ) {
+                Task { await state.scanApps() }
+            }
+        } else {
+            listContent
         }
     }
 
@@ -240,6 +268,22 @@ struct AppUninstallerView: View {
         }
     }
 
+    /// "Review…" on the trashed-app offer (LeftoversWhatsNew board): selects the app under Removed
+    /// apps, ticks its sure matches (possible matches stay unticked) and opens the usual confirm.
+    private func openLeftoversReview() {
+        guard let id = state.leftoversReviewID else { return }
+        state.leftoversReviewID = nil
+        guard let group = state.orphanedGroups.first(where: { $0.id == id }) else { return }
+        vm.filter = .all
+        vm.searchText = ""
+        vm.showAllRemoved = true
+        vm.selectedRemovedID = group.id
+        let sure = group.items.filter(\.isStrongMatch)
+        guard !sure.isEmpty else { return }
+        vm.tickedRemovedIDs.formUnion(sure.map(\.id))
+        confirmTrashRemoved([(group, sure)])
+    }
+
     /// Moves what the confirm listed, and only that. Each path is checked again here (still a
     /// ~/Library app-data folder, still in the scan) and by `clearOrphanedItems` (unchanged since
     /// the scan, not protected) right before it moves.
@@ -252,8 +296,14 @@ struct AppUninstallerView: View {
     }
 
     private func filterTitle(_ filter: AppUninstallerViewModel.Filter) -> String {
-        guard filter == .unused, state.hasScannedApps else { return filter.rawValue }
-        return "\(filter.rawValue) · \(unusedCount)"
+        switch filter {
+        case .unused where state.hasScannedApps:
+            return "\(filter.rawValue) · \(unusedCount)"
+        case .developer where state.hasScannedDevTools:
+            return "\(filter.rawValue) · \(state.devTools.rowCount)"
+        default:
+            return filter.rawValue
+        }
     }
 
     /// One row when it fits; on a narrow page the filter gets its own row so the bar never
@@ -262,14 +312,14 @@ struct AppUninstallerView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 filterTabs
-                sortPicker
+                if vm.filter != .developer { sortPicker }
                 Spacer(minLength: 12)
                 toolbarRescan
             }
             VStack(alignment: .leading, spacing: 8) {
                 filterTabs
                 HStack(spacing: 8) {
-                    sortPicker
+                    if vm.filter != .developer { sortPicker }
                     Spacer(minLength: 8)
                     toolbarRescan
                 }
@@ -293,8 +343,10 @@ struct AppUninstallerView: View {
     }
 
     private var toolbarRescan: some View {
-        HStack(spacing: 12) {
-            if state.isScanningApps {
+        let developer = vm.filter == .developer
+        let busy = developer ? state.isScanningDevTools : state.isScanningApps
+        return HStack(spacing: 12) {
+            if busy {
                 // AppsStates: 12 pt spinner, 6 pt gap, "Refreshing…" in caption inkSecondary.
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
@@ -302,13 +354,13 @@ struct AppUninstallerView: View {
                 }
             }
             Button {
-                Task { await state.scanApps() }
+                Task { developer ? await state.scanDevTools() : await state.scanApps() }
             } label: {
                 Label("Rescan", systemImage: "arrow.clockwise")
             }
             .buttonStyle(SweepButtonStyle(kind: .secondary, height: 28))
             .fixedSize()
-            .disabled(state.isScanningApps)
+            .disabled(busy)
         }
         .fixedSize()
     }

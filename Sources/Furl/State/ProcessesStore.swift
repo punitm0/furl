@@ -386,6 +386,25 @@ final class ProcessesStore: ObservableObject {
         return (stopped, bytes)
     }
 
+    /// The leftovers after a refresh that finished after this call (waits for one already running).
+    func freshLeftovers() async -> [LeftoverProcess] {
+        while isRefreshing {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        await refresh()
+        return leftovers
+    }
+
+    /// Shortcuts' "Stop leftover servers": only the leftovers the user confirmed that are still listed
+    /// after a fresh refresh and still pass `LeftoverServers.eligible` (checked again right now).
+    func stopConfirmedLeftovers(ids: Set<String>) async -> (stopped: Int, stuck: Int, bytes: UInt64) {
+        let targets = LeftoverServers.eligible(await freshLeftovers().filter { ids.contains($0.id) })
+        guard !targets.isEmpty else { return (0, 0, 0) }
+        let bytes = await stop(targets, signal: SIGTERM, automatic: false)
+        let stuck = targets.filter { stubbornLeftoverIDs.contains($0.id) }.count
+        return (targets.count - stuck, stuck, bytes)
+    }
+
     /// SIGKILL for leftovers that ignored SIGTERM.
     func forceQuitLeftovers(ids: Set<String>) async {
         let targets = leftovers.filter { ids.contains($0.id) }

@@ -28,5 +28,5 @@ Thanks for helping. Furl is maintained by one person, so small, focused pull req
 
 ## License
 
-Furl is licensed under GPL-3.0-or-later. By contributing, you agree your contribution is licensed under the same
+Furl is licensed under the MIT license. By contributing, you agree your contribution is licensed under the same
 terms.

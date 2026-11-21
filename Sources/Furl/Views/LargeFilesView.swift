@@ -55,6 +55,8 @@ struct LargeFilesView: View {
             }
             toolbarBar
 
+            LimitedResultsLine(screen: .largeFiles, hasResults: state.hasScannedLargeFiles)
+
             LiveScanStripSlot(status: state.liveScans[.largeFiles], onStop: { state.stopScan(.largeFiles) },
                               onRescan: { Task { await state.scanLargeFiles() } })
 

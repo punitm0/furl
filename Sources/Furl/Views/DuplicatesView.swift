@@ -58,6 +58,8 @@ struct DuplicatesView: View {
                 foldersPanel
             }
 
+            LimitedResultsLine(screen: .duplicates, hasResults: state.hasScannedDuplicates)
+
             LiveScanStripSlot(status: state.liveScans[.duplicates], onStop: { state.stopScan(.duplicates) },
                               onRescan: { Task { await state.scanDuplicates() } })
 
