@@ -293,7 +293,9 @@ struct AutoSweepListSheet: View {
     }
 
     private func checkbox(isOn: Bool, set: @escaping @MainActor @Sendable (Bool) -> Void) -> some View {
-        Toggle("", isOn: Binding(get: { isOn }, set: set))
+        // Wrapped rather than passed straight in: converting `set` to Binding's setter type crashes the
+        // Swift 6.3 compiler in release builds (CI, Xcode 26).
+        Toggle("", isOn: Binding(get: { isOn }, set: { set($0) }))
             .labelsHidden()
             .toggleStyle(.furlCheckbox)
     }
